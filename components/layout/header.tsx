@@ -27,7 +27,7 @@ import { startOfMonth, endOfMonth, subMonths, addMonths } from "date-fns";
 
 interface HeaderProps {
   title: string;
-  subtitle?: string;
+  subtitle?: React.ReactNode;
   currentDate?: Date;
   onDateChange?: (date: Date) => void;
   showDateNav?: boolean;
