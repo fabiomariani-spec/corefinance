@@ -1,0 +1,485 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── MULTI-TENANT ──────────────────────────────────────────────────────────
+
+model Company {
+  id          String   @id @default(cuid())
+  name        String
+  document    String?
+  email       String?
+  phone       String?
+  logoUrl     String?
+  currency    String   @default("BRL")
+  timezone    String   @default("America/Sao_Paulo")
+  headcount   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users        CompanyUser[]
+  accounts     Account[]
+  creditCards  CreditCard[]
+  categories   Category[]
+  departments  Department[]
+  contacts     Contact[]
+  transactions Transaction[]
+  invoices     CreditCardInvoice[]
+  invites      Invite[]
+  employees    Employee[]
+  events       Event[]
+
+  @@map("companies")
+}
+
+model CompanyUser {
+  id        String   @id @default(cuid())
+  companyId String
+  userId    String
+  role      UserRole @default(ACCOUNTANT)
+  name      String
+  email     String
+  avatarUrl String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, userId])
+  @@map("company_users")
+}
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  ACCOUNTANT
+  VIEWER
+}
+
+model Invite {
+  id        String    @id @default(cuid())
+  companyId String
+  email     String
+  role      UserRole  @default(ACCOUNTANT)
+  token     String    @unique @default(cuid())
+  invitedBy String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("invites")
+}
+
+// ─── CONTAS BANCÁRIAS ─────────────────────────────────────────────────────
+
+model Account {
+  id            String      @id @default(cuid())
+  companyId     String
+  name          String
+  type          AccountType @default(CHECKING)
+  bank          String?
+  agency        String?
+  accountNumber String?
+  balance       Decimal     @default(0) @db.Decimal(15, 2)
+  isActive      Boolean     @default(true)
+  color         String?     @default("#6366f1")
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+
+  @@map("accounts")
+}
+
+enum AccountType {
+  CHECKING
+  SAVINGS
+  INVESTMENT
+  CASH
+}
+
+// ─── CARTÕES DE CRÉDITO ───────────────────────────────────────────────────
+
+model CreditCard {
+  id         String    @id @default(cuid())
+  companyId  String
+  name       String
+  bank       String?
+  brand      CardBrand @default(OTHER)
+  lastFour   String?
+  limit      Decimal   @db.Decimal(15, 2)
+  closingDay Int
+  dueDay     Int
+  holder     String?
+  color      String?   @default("#8b5cf6")
+  isActive   Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  company      Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+  invoices     CreditCardInvoice[]
+
+  @@map("credit_cards")
+}
+
+enum CardBrand {
+  VISA
+  MASTERCARD
+  AMEX
+  ELO
+  HIPERCARD
+  OTHER
+}
+
+// ─── PLANO DE CONTAS ──────────────────────────────────────────────────────
+
+model Category {
+  id        String       @id @default(cuid())
+  companyId String
+  name      String
+  type      CategoryType
+  parentId  String?
+  color     String?      @default("#6366f1")
+  icon      String?
+  isDefault Boolean      @default(false)
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  parent       Category?     @relation("CategoryChildren", fields: [parentId], references: [id])
+  children     Category[]    @relation("CategoryChildren")
+  transactions Transaction[]
+  invoiceItems InvoiceItem[]
+  eventItems   EventItem[]
+
+  @@map("categories")
+}
+
+enum CategoryType {
+  INCOME
+  EXPENSE
+}
+
+model Department {
+  id            String   @id @default(cuid())
+  companyId     String
+  name          String
+  code          String?
+  color         String?  @default("#10b981")
+  monthlyBudget Decimal  @default(0) @db.Decimal(15, 2)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+  invoiceItems InvoiceItem[]
+  employees    Employee[]
+  events       Event[]
+
+  @@map("departments")
+}
+
+// ─── FORNECEDORES / CLIENTES ──────────────────────────────────────────────
+
+model Contact {
+  id        String      @id @default(cuid())
+  companyId String
+  name      String
+  type      ContactType @default(BOTH)
+  document  String?
+  email     String?
+  phone     String?
+  isActive  Boolean     @default(true)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+  eventItems   EventItem[]
+
+  @@map("contacts")
+}
+
+enum ContactType {
+  SUPPLIER
+  CLIENT
+  BOTH
+}
+
+// ─── LANÇAMENTOS FINANCEIROS ──────────────────────────────────────────────
+
+model Transaction {
+  id          String            @id @default(cuid())
+  companyId   String
+  description String
+  amount      Decimal           @db.Decimal(15, 2)
+  type        TransactionType
+  status      TransactionStatus @default(PENDING)
+  isPredicted Boolean           @default(false)
+  isRecurring Boolean           @default(false)
+
+  categoryId   String?
+  departmentId String?
+  contactId    String?
+  accountId    String?
+  creditCardId String?
+
+  competenceDate DateTime
+  dueDate        DateTime?
+  paymentDate    DateTime?
+  paymentMethod  PaymentMethod?
+
+  installmentNumber  Int?
+  installmentTotal   Int?
+  installmentGroupId String?
+
+  recurrenceRule    String?
+  recurrenceGroupId String?
+
+  importedFromInvoiceId String?
+  importSource          String?
+  employeeId            String?
+  eventItemId           String?
+
+  notes String?
+  tags  String[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  company    Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  category   Category?    @relation(fields: [categoryId], references: [id])
+  department Department?  @relation(fields: [departmentId], references: [id])
+  contact    Contact?     @relation(fields: [contactId], references: [id])
+  account    Account?     @relation(fields: [accountId], references: [id])
+  creditCard CreditCard?  @relation(fields: [creditCardId], references: [id])
+  employee   Employee?    @relation(fields: [employeeId], references: [id])
+  attachments Attachment[]
+  invoiceItem InvoiceItem?
+  eventItem   EventItem?
+
+  @@index([companyId, competenceDate])
+  @@index([companyId, type])
+  @@index([companyId, status])
+  @@map("transactions")
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+}
+
+enum TransactionStatus {
+  PENDING
+  PREDICTED
+  PAID
+  RECEIVED
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CREDIT_CARD
+  DEBIT_CARD
+  BANK_TRANSFER
+  PIX
+  BOLETO
+  CASH
+  CHECK
+  OTHER
+}
+
+model Attachment {
+  id            String   @id @default(cuid())
+  transactionId String
+  name          String
+  url           String
+  size          Int?
+  mimeType      String?
+  createdAt     DateTime @default(now())
+
+  transaction Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@map("attachments")
+}
+
+// ─── FATURAS DE CARTÃO ────────────────────────────────────────────────────
+
+model CreditCardInvoice {
+  id             String        @id @default(cuid())
+  companyId      String
+  creditCardId   String
+  referenceMonth Int
+  closingDate    DateTime
+  dueDate        DateTime
+  totalAmount    Decimal       @db.Decimal(15, 2)
+  status         InvoiceStatus @default(OPEN)
+  fileUrl        String?
+  fileName       String?
+  importedAt     DateTime?
+  processedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  company    Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  creditCard CreditCard    @relation(fields: [creditCardId], references: [id])
+  items      InvoiceItem[]
+
+  @@map("credit_card_invoices")
+}
+
+enum InvoiceStatus {
+  OPEN
+  CLOSED
+  PAID
+  PROCESSING
+}
+
+model InvoiceItem {
+  id              String            @id @default(cuid())
+  invoiceId       String
+  date            DateTime
+  description     String
+  amount          Decimal           @db.Decimal(15, 2)
+  establishment   String?
+  installmentInfo String?
+
+  categoryId   String?
+  departmentId String?
+  confidence   Float?
+
+  status        InvoiceItemStatus @default(PENDING)
+  transactionId String?           @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  invoice     CreditCardInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  category    Category?         @relation(fields: [categoryId], references: [id])
+  department  Department?       @relation(fields: [departmentId], references: [id])
+  transaction Transaction?      @relation(fields: [transactionId], references: [id])
+
+  @@map("invoice_items")
+}
+
+enum InvoiceItemStatus {
+  PENDING
+  CONFIRMED
+  REJECTED
+}
+
+// ─── EVENTOS ──────────────────────────────────────────────────────────────
+
+model Event {
+  id           String      @id @default(cuid())
+  companyId    String
+  name         String
+  type         String?
+  startDate    DateTime
+  endDate      DateTime?
+  location     String?
+  responsible  String?
+  description  String?
+  budget       Decimal     @default(0) @db.Decimal(15, 2)
+  departmentId String?
+  status       EventStatus @default(PLANNING)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  company    Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  department Department? @relation(fields: [departmentId], references: [id])
+  items      EventItem[]
+
+  @@index([companyId, status])
+  @@map("events")
+}
+
+enum EventStatus {
+  PLANNING
+  PENDING_APPROVAL
+  APPROVED
+  IN_PROGRESS
+  FINISHED
+  CANCELLED
+}
+
+model EventItem {
+  id              String          @id @default(cuid())
+  eventId         String
+  companyId       String
+  description     String
+  categoryId      String?
+  contactId       String?
+  amount          Decimal         @db.Decimal(15, 2)
+  dueDate         DateTime?
+  paymentMethod   String?
+  notes           String?
+  requestedBy     String?
+  status          EventItemStatus @default(DRAFT)
+  rejectionReason String?
+  transactionId   String?         @unique
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  event       Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  category    Category?    @relation(fields: [categoryId], references: [id])
+  contact     Contact?     @relation(fields: [contactId], references: [id])
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@index([eventId])
+  @@map("event_items")
+}
+
+enum EventItemStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+  INTEGRATED
+  PAID
+  CANCELLED
+}
+
+// ─── COLABORADORES / FOLHA ────────────────────────────────────────────────
+
+model Employee {
+  id            String         @id @default(cuid())
+  companyId     String
+  name          String
+  role          String?
+  email         String?
+  phone         String?
+  departmentId  String?
+  salary        Decimal        @db.Decimal(15, 2)
+  dueDayOfMonth Int            @default(5)
+  hireDate      DateTime       @default(now())
+  dismissDate   DateTime?
+  status        EmployeeStatus @default(ACTIVE)
+  notes         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  department   Department?   @relation(fields: [departmentId], references: [id])
+  transactions Transaction[]
+
+  @@index([companyId, status])
+  @@map("employees")
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  PAUSED
+  DISMISSED
+}
