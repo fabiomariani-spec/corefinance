@@ -84,18 +84,30 @@ export default async function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  let user;
+  try {
+    const supabase = await createClient();
+    const { data } = await supabase.auth.getUser();
+    user = data?.user;
+  } catch (err) {
+    console.error("[Layout] Supabase auth error:", err);
+    redirect("/login");
+  }
 
   if (!user) {
     redirect("/login");
   }
 
-  await ensureCompanySetup(
-    user.id,
-    user.email!,
-    user.user_metadata as Record<string, string>
-  );
+  try {
+    await ensureCompanySetup(
+      user.id,
+      user.email!,
+      (user.user_metadata ?? {}) as Record<string, string>
+    );
+  } catch (err) {
+    console.error("[Layout] ensureCompanySetup error:", err);
+    // Don't crash — user likely already has a company
+  }
 
   return (
     <div className="flex h-screen bg-zinc-950 overflow-hidden">

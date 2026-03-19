@@ -219,6 +219,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
           )}
 
           {/* Category + Department */}
+          <div className="border-t border-zinc-800 pt-3" />
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>Categoria</Label>
@@ -260,6 +261,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
           </div>
 
           {/* Account + CreditCard */}
+          <div className="border-t border-zinc-800 pt-3" />
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>Conta Bancária</Label>

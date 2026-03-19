@@ -52,24 +52,40 @@ export async function GET(request: NextRequest) {
     if (categoryId) baseWhere.categoryId = categoryId;
     if (departmentId) baseWhere.departmentId = departmentId;
 
-    if (month) {
-      const [y, m] = month.split("-").map(Number);
-      const gte = new Date(y, m - 1, 1);
-      const lte = new Date(y, m, 0, 23, 59, 59);
-      // Filter by dueDate when available (cash-flow view); fall back to competenceDate
-      baseWhere.OR = [
-        { dueDate: { gte, lte } },
-        { dueDate: null, competenceDate: { gte, lte } },
-      ];
-    } else if (startDate || endDate) {
-      baseWhere.OR = [
-        { dueDate: { ...(startDate && { gte: new Date(startDate) }), ...(endDate && { lte: new Date(endDate) }) } },
-        { dueDate: null, competenceDate: { ...(startDate && { gte: new Date(startDate) }), ...(endDate && { lte: new Date(endDate) }) } },
-      ];
-    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const dateFilter: any[] | null = month
+      ? (() => {
+          const [y, m] = month.split("-").map(Number);
+          const gte = new Date(y, m - 1, 1);
+          const lte = new Date(y, m, 0, 23, 59, 59);
+          return [
+            { dueDate: { gte, lte } },
+            { dueDate: null, competenceDate: { gte, lte } },
+          ];
+        })()
+      : (startDate || endDate)
+        ? [
+            { dueDate: { ...(startDate && { gte: new Date(startDate) }), ...(endDate && { lte: new Date(endDate) }) } },
+            { dueDate: null, competenceDate: { ...(startDate && { gte: new Date(startDate) }), ...(endDate && { lte: new Date(endDate) }) } },
+          ]
+        : null;
 
-    if (search) {
-      baseWhere.description = { contains: search, mode: "insensitive" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const searchFilter: any[] | null = search
+      ? [
+          { description: { contains: search, mode: "insensitive" } },
+          { category: { name: { contains: search, mode: "insensitive" } } },
+          { department: { name: { contains: search, mode: "insensitive" } } },
+          { contact: { name: { contains: search, mode: "insensitive" } } },
+        ]
+      : null;
+
+    if (dateFilter && searchFilter) {
+      baseWhere.AND = [{ OR: dateFilter }, { OR: searchFilter }];
+    } else if (dateFilter) {
+      baseWhere.OR = dateFilter;
+    } else if (searchFilter) {
+      baseWhere.OR = searchFilter;
     }
 
     // ── Full where including type/status for paginated table ──
@@ -88,40 +104,36 @@ export async function GET(request: NextRequest) {
 
     const pendingWhere = { ...baseWhere, type: "EXPENSE" as const, status: { in: ["PENDING", "OVERDUE"] as ("PENDING" | "OVERDUE")[] } };
 
-    const [transactions, total, pendingAgg, paidAgg, pendingByDeptRaw] = await Promise.all([
-      prisma.transaction.findMany({
-        where,
-        include: {
-          category: { select: { id: true, name: true, color: true } },
-          department: { select: { id: true, name: true, color: true } },
-          contact: { select: { id: true, name: true } },
-          account: { select: { id: true, name: true } },
-          creditCard: { select: { id: true, name: true } },
-          attachments: { select: { id: true, name: true, url: true } },
-        },
-        orderBy: { competenceDate: "desc" },
-        skip: (page - 1) * limit,
-        take: limit,
-      }),
-      prisma.transaction.count({ where }),
-      // Saídas Pendentes total — uses baseWhere
-      prisma.transaction.aggregate({
-        where: pendingWhere,
-        _sum: { amount: true },
-      }),
-      // Saídas Pagas — uses baseWhere
-      prisma.transaction.aggregate({
-        where: { ...baseWhere, type: "EXPENSE", status: "PAID" },
-        _sum: { amount: true },
-      }),
-      // Pendentes agrupadas por departamento
-      prisma.transaction.groupBy({
-        by: ["departmentId"],
-        where: pendingWhere,
-        _sum: { amount: true },
-        orderBy: { _sum: { amount: "desc" } },
-      }),
-    ]);
+    // Sequential queries to avoid pool exhaustion on serverless
+    const transactions = await prisma.transaction.findMany({
+      where,
+      include: {
+        category: { select: { id: true, name: true, color: true } },
+        department: { select: { id: true, name: true, color: true } },
+        contact: { select: { id: true, name: true } },
+        account: { select: { id: true, name: true } },
+        creditCard: { select: { id: true, name: true } },
+        attachments: { select: { id: true, name: true, url: true } },
+      },
+      orderBy: { competenceDate: "desc" },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+    const total = await prisma.transaction.count({ where });
+    const pendingAgg = await prisma.transaction.aggregate({
+      where: pendingWhere,
+      _sum: { amount: true },
+    });
+    const paidAgg = await prisma.transaction.aggregate({
+      where: { ...baseWhere, type: "EXPENSE", status: "PAID" },
+      _sum: { amount: true },
+    });
+    const pendingByDeptRaw = await prisma.transaction.groupBy({
+      by: ["departmentId"],
+      where: pendingWhere,
+      _sum: { amount: true },
+      orderBy: { _sum: { amount: "desc" } },
+    });
 
     // Fetch department details for the breakdown
     const deptIds = pendingByDeptRaw.map((r) => r.departmentId).filter(Boolean) as string[];
@@ -153,7 +165,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Get transactions error:", error);
-    return NextResponse.json({ error: "Erro ao buscar lançamentos" }, { status: 500 });
+    return NextResponse.json({ error: "Erro ao buscar lançamentos", detail: String(error) }, { status: 500 });
   }
 }
 

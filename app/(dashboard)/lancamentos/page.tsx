@@ -39,9 +39,7 @@ import {
   AlertTriangle,
   X,
   CalendarRange,
-  DollarSign,
   Loader2,
-  Users,
 } from "lucide-react";
 
 interface Transaction {
@@ -129,11 +127,6 @@ export default function TransactionsPage() {
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
 
-  // Variable compensation state
-  interface VarEmployee { id: string; name: string; role: string | null; salary: number; dueDayOfMonth: number; department: { id: string; name: string; color: string | null } | null }
-  const [varEmployees, setVarEmployees] = useState<VarEmployee[]>([]);
-  const [varRecords, setVarRecords] = useState<Record<string, number>>({});
-  const [varLoading, setVarLoading] = useState(false);
 
   const limit = 20;
 
@@ -151,30 +144,6 @@ export default function TransactionsPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Fetch variable compensation for the current month
-  useEffect(() => {
-    async function loadVar() {
-      setVarLoading(true);
-      try {
-        // Derive month from dateFrom (YYYY-MM)
-        const month = dateFrom ? dateFrom.slice(0, 7) : `${NOW.getFullYear()}-${String(NOW.getMonth() + 1).padStart(2, "0")}`;
-        const [empRes, varRes] = await Promise.all([
-          fetch("/api/employees"),
-          fetch(`/api/employees/variable?month=${month}`),
-        ]);
-        const empData = await empRes.json();
-        const varData = await varRes.json();
-        if (empData.employees) setVarEmployees(empData.employees.filter((e: VarEmployee & { status: string }) => e.status === "ACTIVE"));
-        if (varData.records) {
-          const map: Record<string, number> = {};
-          for (const [empId, v] of Object.entries(varData.records)) map[empId] = Number((v as { amount: number }).amount);
-          setVarRecords(map);
-        }
-      } catch { /* ignore */ }
-      finally { setVarLoading(false); }
-    }
-    loadVar();
-  }, [dateFrom]);
 
   // Fetch departments once
   useEffect(() => {
@@ -311,8 +280,7 @@ export default function TransactionsPage() {
   }
 
   const totalPages = Math.ceil(total / limit);
-  const totalVariavel = Object.values(varRecords).reduce((s, v) => s + v, 0);
-  const totalPrevisto = summary.expensePending + summary.expensePaid + totalVariavel;
+  const totalPrevisto = summary.expensePending + summary.expensePaid;
 
   return (
     <>
@@ -320,7 +288,7 @@ export default function TransactionsPage() {
 
       <div className="flex-1 p-6 space-y-5">
         {/* Summary Cards */}
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-3 gap-4">
           {/* Saídas Pendentes — clicável com breakdown por departamento */}
           <div className="relative" ref={deptDropdownRef}>
             <button
@@ -405,17 +373,6 @@ export default function TransactionsPage() {
             <div>
               <p className="text-xs text-zinc-500">Saídas Pagas</p>
               <p className="text-lg font-bold text-emerald-400">{formatCurrency(summary.expensePaid)}</p>
-            </div>
-          </div>
-
-          {/* Variável */}
-          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-amber-600/15 flex items-center justify-center shrink-0">
-              <DollarSign className="w-4 h-4 text-amber-400" />
-            </div>
-            <div>
-              <p className="text-xs text-zinc-500">Variável</p>
-              <p className="text-lg font-bold text-amber-400">{formatCurrency(totalVariavel)}</p>
             </div>
           </div>
 
@@ -560,6 +517,7 @@ export default function TransactionsPage() {
               setEditingTransaction(null);
               setModalOpen(true);
             }}
+            className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-600/20 border-0 font-semibold"
           >
             <Plus className="w-4 h-4" />
             Novo Lançamento
@@ -618,7 +576,6 @@ export default function TransactionsPage() {
                   <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wide">Descrição</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wide">Categoria</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wide">Departamento</th>
-                  <th className="text-right px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wide">Variável</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wide">Competência</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wide">Vencimento</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500 uppercase tracking-wide">Status</th>
@@ -630,7 +587,7 @@ export default function TransactionsPage() {
                 {loading ? (
                   Array.from({ length: 8 }).map((_, i) => (
                     <tr key={i} className="border-b border-zinc-800/50">
-                      {Array.from({ length: 10 }).map((_, j) => (
+                      {Array.from({ length: 9 }).map((_, j) => (
                         <td key={j} className="px-4 py-3">
                           <div className="h-4 skeleton rounded" />
                         </td>
@@ -639,7 +596,7 @@ export default function TransactionsPage() {
                   ))
                 ) : transactions.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-4 py-12 text-center text-zinc-500">
+                    <td colSpan={9} className="px-4 py-12 text-center text-zinc-500">
                       Nenhum lançamento encontrado
                     </td>
                   </tr>
@@ -708,9 +665,6 @@ export default function TransactionsPage() {
                           <span className="text-zinc-600 text-xs">—</span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-right">
-                        <span className="text-zinc-600 text-xs">—</span>
-                      </td>
                       <td className="px-4 py-3 text-zinc-400 text-xs">
                         {formatDate(tx.competenceDate)}
                       </td>
@@ -771,61 +725,6 @@ export default function TransactionsPage() {
                     </tr>
                   ))
                 )}
-                {/* ─── Variable compensation rows ─── */}
-                {!loading && varEmployees
-                  .map((emp) => {
-                    const variable = varRecords[emp.id] ?? 0;
-                    const total = Number(emp.salary) + variable;
-                    const month = dateFrom ? dateFrom.slice(0, 7) : `${NOW.getFullYear()}-${String(NOW.getMonth() + 1).padStart(2, "0")}`;
-                    const [y, m] = month.split("-");
-                    const dueDay = String(emp.dueDayOfMonth ?? 5).padStart(2, "0");
-                    const competenceDate = `${month}-01`;
-                    const dueDate = `${y}-${m}-${dueDay}`;
-                    return (
-                      <tr key={`var-${emp.id}`} className={`border-b border-zinc-800/50 ${variable > 0 ? "bg-amber-600/5" : ""}`}>
-                        <td className="px-4 py-3 w-10" />
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-2">
-                            <DollarSign className={`w-4 h-4 shrink-0 ${variable > 0 ? "text-amber-500" : "text-zinc-500"}`} />
-                            <div>
-                              <p className="text-zinc-100 font-medium">{emp.name}</p>
-                              {emp.role && <p className="text-xs text-zinc-500">{emp.role}</p>}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center gap-1.5">
-                            <div className={`w-2 h-2 rounded-full shrink-0 ${variable > 0 ? "bg-amber-500" : "bg-zinc-500"}`} />
-                            <span className="text-zinc-300 text-xs">{variable > 0 ? "Remuneração Variável" : "Folha de Pagamento"}</span>
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          {emp.department ? (
-                            <div className="flex items-center gap-1.5">
-                              <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: emp.department.color ?? "#6b7280" }} />
-                              <span className="text-zinc-300 text-xs">{emp.department.name}</span>
-                            </div>
-                          ) : <span className="text-zinc-600 text-xs">—</span>}
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          {variable > 0 ? (
-                            <span className="text-amber-400 text-xs font-semibold">{formatCurrency(variable)}</span>
-                          ) : (
-                            <span className="text-zinc-600 text-xs">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-zinc-400 text-xs">{formatDate(competenceDate)}</td>
-                        <td className="px-4 py-3 text-zinc-400 text-xs">{formatDate(dueDate)}</td>
-                        <td className="px-4 py-3">
-                          <Badge variant="warning">Pendente</Badge>
-                        </td>
-                        <td className="px-4 py-3 text-right">
-                          <span className="font-semibold text-red-400">-{formatCurrency(total)}</span>
-                        </td>
-                        <td className="px-4 py-3" />
-                      </tr>
-                    );
-                  })}
               </tbody>
             </table>
           </div>

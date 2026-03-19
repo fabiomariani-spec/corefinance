@@ -13,13 +13,18 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get("startDate");
     const endDate = searchParams.get("endDate");
 
-    const start = startDate ? new Date(startDate) : startOfMonth(new Date());
+    // Fix timezone: append T12:00:00 to avoid UTC midnight shifting to previous day in BR
+    const start = startDate ? new Date(startDate + "T00:00:00") : startOfMonth(new Date());
     const end = endDate ? new Date(endDate + "T23:59:59") : endOfMonth(new Date());
 
+    // Same date logic as /api/transactions: dueDate OR competenceDate
     const transactions = await prisma.transaction.findMany({
       where: {
         companyId,
-        competenceDate: { gte: start, lte: end },
+        OR: [
+          { dueDate: { gte: start, lte: end } },
+          { dueDate: null, competenceDate: { gte: start, lte: end } },
+        ],
         status: { not: "CANCELLED" },
         isPredicted: false,
       },

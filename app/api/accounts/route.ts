@@ -11,33 +11,32 @@ export async function GET() {
       orderBy: { name: "asc" },
     });
 
-    // Compute real current balance for each account:
-    // currentBalance = openingBalance + sum(RECEIVED income) - sum(PAID expenses)
-    const accountsWithBalance = await Promise.all(
-      accounts.map(async (acc) => {
-        const [incomeAgg, expenseAgg] = await Promise.all([
-          prisma.transaction.aggregate({
-            where: { accountId: acc.id, type: "INCOME", status: "RECEIVED" },
-            _sum: { amount: true },
-          }),
-          prisma.transaction.aggregate({
-            where: { accountId: acc.id, type: "EXPENSE", status: "PAID" },
-            _sum: { amount: true },
-          }),
-        ]);
+    // Compute real current balance: single grouped query instead of N*2
+    const txByAccount = await prisma.transaction.groupBy({
+      by: ["accountId", "type"],
+      where: {
+        accountId: { in: accounts.map((a) => a.id) },
+        OR: [
+          { type: "INCOME", status: "RECEIVED" },
+          { type: "EXPENSE", status: "PAID" },
+        ],
+      },
+      _sum: { amount: true },
+    });
 
-        const openingBalance = Number(acc.balance);
-        const totalIncome = Number(incomeAgg._sum.amount ?? 0);
-        const totalExpense = Number(expenseAgg._sum.amount ?? 0);
-        const currentBalance = openingBalance + totalIncome - totalExpense;
+    const accIncMap: Record<string, number> = {};
+    const accExpMap: Record<string, number> = {};
+    for (const r of txByAccount) {
+      if (!r.accountId) continue;
+      if (r.type === "INCOME") accIncMap[r.accountId] = Number(r._sum.amount ?? 0);
+      else accExpMap[r.accountId] = Number(r._sum.amount ?? 0);
+    }
 
-        return {
-          ...acc,
-          openingBalance,
-          balance: currentBalance,
-        };
-      })
-    );
+    const accountsWithBalance = accounts.map((acc) => {
+      const openingBalance = Number(acc.balance);
+      const currentBalance = openingBalance + (accIncMap[acc.id] ?? 0) - (accExpMap[acc.id] ?? 0);
+      return { ...acc, openingBalance, balance: currentBalance };
+    });
 
     return NextResponse.json(accountsWithBalance);
   } catch {

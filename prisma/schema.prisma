@@ -30,8 +30,9 @@ model Company {
   transactions Transaction[]
   invoices     CreditCardInvoice[]
   invites      Invite[]
-  employees    Employee[]
-  events       Event[]
+  employees              Employee[]
+  events                 Event[]
+  variableCompensations  VariableCompensation[]
 
   @@map("companies")
 }
@@ -472,10 +473,29 @@ model Employee {
 
   company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   department   Department?   @relation(fields: [departmentId], references: [id])
-  transactions Transaction[]
+  transactions            Transaction[]
+  variableCompensations   VariableCompensation[]
 
   @@index([companyId, status])
   @@map("employees")
+}
+
+model VariableCompensation {
+  id          String   @id @default(cuid())
+  companyId   String
+  employeeId  String
+  month       String   // "2026-03" format
+  amount      Decimal  @db.Decimal(15, 2)
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  company  Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@unique([employeeId, month])
+  @@index([companyId, month])
+  @@map("variable_compensations")
 }
 
 enum EmployeeStatus {

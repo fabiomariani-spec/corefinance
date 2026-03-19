@@ -25,81 +25,77 @@ export async function GET(request: NextRequest) {
     const monthStart = startOfMonth(monthRef);
     const monthEnd = endOfMonth(monthRef);
 
-    // ─── 1. Account balances ─────────────────────────────────────────────────
+    // ─── 1. Account balances (single grouped query instead of N*2) ──────────
     const accounts = await prisma.account.findMany({
       where: { companyId, isActive: true },
       select: { id: true, name: true, balance: true, color: true, type: true },
     });
 
-    // Company-level totals (regardless of accountId) — most transactions won't have accountId
-    const [companyInc, companyExp] = await Promise.all([
-      prisma.transaction.aggregate({
-        where: { companyId, type: "INCOME", status: "RECEIVED" },
+    // Company-level totals + per-account totals in 2 grouped queries
+    const [txByAccount, companyTotals] = await Promise.all([
+      prisma.transaction.groupBy({
+        by: ["accountId", "type"],
+        where: {
+          companyId,
+          accountId: { not: null },
+          OR: [
+            { type: "INCOME", status: "RECEIVED" },
+            { type: "EXPENSE", status: "PAID" },
+          ],
+        },
         _sum: { amount: true },
       }),
-      prisma.transaction.aggregate({
-        where: { companyId, type: "EXPENSE", status: "PAID" },
+      prisma.transaction.groupBy({
+        by: ["type"],
+        where: {
+          companyId,
+          OR: [
+            { type: "INCOME", status: "RECEIVED" },
+            { type: "EXPENSE", status: "PAID" },
+          ],
+        },
         _sum: { amount: true },
       }),
     ]);
 
+    const companyIncTotal = Number(companyTotals.find((r) => r.type === "INCOME")?._sum.amount ?? 0);
+    const companyExpTotal = Number(companyTotals.find((r) => r.type === "EXPENSE")?._sum.amount ?? 0);
     const baseAccountBalance = accounts.reduce((s, a) => s + Number(a.balance), 0);
-    const accountBalance =
-      baseAccountBalance +
-      Number(companyInc._sum.amount ?? 0) -
-      Number(companyExp._sum.amount ?? 0);
+    const accountBalance = baseAccountBalance + companyIncTotal - companyExpTotal;
 
-    // Per-account display: show initial balance + transactions linked to that account
-    const accountsWithBalance = await Promise.all(
-      accounts.map(async (acc) => {
-        const [inc, exp] = await Promise.all([
-          prisma.transaction.aggregate({
-            where: { accountId: acc.id, type: "INCOME", status: "RECEIVED" },
-            _sum: { amount: true },
-          }),
-          prisma.transaction.aggregate({
-            where: { accountId: acc.id, type: "EXPENSE", status: "PAID" },
-            _sum: { amount: true },
-          }),
-        ]);
-        return {
-          id: acc.id,
-          name: acc.name,
-          color: acc.color,
-          type: acc.type,
-          balance:
-            Number(acc.balance) +
-            Number(inc._sum.amount ?? 0) -
-            Number(exp._sum.amount ?? 0),
-        };
-      })
-    );
+    // Per-account balances from grouped data
+    const accIncMap: Record<string, number> = {};
+    const accExpMap: Record<string, number> = {};
+    for (const r of txByAccount) {
+      if (!r.accountId) continue;
+      if (r.type === "INCOME") accIncMap[r.accountId] = Number(r._sum.amount ?? 0);
+      else accExpMap[r.accountId] = Number(r._sum.amount ?? 0);
+    }
+    const accountsWithBalance = accounts.map((acc) => ({
+      id: acc.id,
+      name: acc.name,
+      color: acc.color,
+      type: acc.type,
+      balance: Number(acc.balance) + (accIncMap[acc.id] ?? 0) - (accExpMap[acc.id] ?? 0),
+    }));
 
-    // ─── 2. Burn rate (últimos 30 dias realizados) ────────────────────────────
+    // ─── 2. Burn rate (single grouped query) ───────────────────────────────────
     const burnStart = subDays(today, 30);
-    const [recentInc, recentExp] = await Promise.all([
-      prisma.transaction.aggregate({
-        where: {
-          companyId,
-          type: "INCOME",
-          status: "RECEIVED",
-          competenceDate: { gte: burnStart, lte: today },
-        },
-        _sum: { amount: true },
-      }),
-      prisma.transaction.aggregate({
-        where: {
-          companyId,
-          type: "EXPENSE",
-          status: "PAID",
-          competenceDate: { gte: burnStart, lte: today },
-        },
-        _sum: { amount: true },
-      }),
-    ]);
+    const burnData = await prisma.transaction.groupBy({
+      by: ["type"],
+      where: {
+        companyId,
+        competenceDate: { gte: burnStart, lte: today },
+        OR: [
+          { type: "INCOME", status: "RECEIVED" },
+          { type: "EXPENSE", status: "PAID" },
+        ],
+      },
+      _sum: { amount: true },
+    });
 
-    const burnRate = Number(recentExp._sum.amount ?? 0) / 30;
-    const avgDailyIncome = Number(recentInc._sum.amount ?? 0) / 30;
+    const burnRate = Number(burnData.find((r) => r.type === "EXPENSE")?._sum.amount ?? 0) / 30;
+    const avgDailyIncome = Number(burnData.find((r) => r.type === "INCOME")?._sum.amount ?? 0) / 30;
     const runway =
       burnRate > 0 ? Math.min(365, Math.floor(accountBalance / burnRate)) : 365;
 
@@ -112,39 +108,36 @@ export async function GET(request: NextRequest) {
       ],
     };
 
-    const [receivables, payables] = await Promise.all([
-      prisma.transaction.findMany({
-        where: { companyId, type: "INCOME", status: pendingStatusFilter, ...monthDueFilter },
-        include: {
-          category: { select: { name: true, color: true } },
-          contact: { select: { name: true } },
-        },
-        orderBy: { dueDate: "asc" },
-      }),
-      prisma.transaction.findMany({
-        where: { companyId, type: "EXPENSE", status: pendingStatusFilter, ...monthDueFilter },
-        include: {
-          category: { select: { name: true, color: true } },
-          contact: { select: { name: true } },
-        },
-        orderBy: { dueDate: "asc" },
-      }),
-    ]);
+    // Sequential to avoid pool exhaustion
+    const receivables = await prisma.transaction.findMany({
+      where: { companyId, type: "INCOME", status: pendingStatusFilter, ...monthDueFilter },
+      include: {
+        category: { select: { name: true, color: true } },
+        contact: { select: { name: true } },
+      },
+      orderBy: { dueDate: "asc" },
+    });
+    const payables = await prisma.transaction.findMany({
+      where: { companyId, type: "EXPENSE", status: pendingStatusFilter, ...monthDueFilter },
+      include: {
+        category: { select: { name: true, color: true } },
+        contact: { select: { name: true } },
+      },
+      orderBy: { dueDate: "asc" },
+    });
 
     const totalReceivables = receivables.reduce((s, t) => s + Number(t.amount), 0);
     const totalPayables = payables.reduce((s, t) => s + Number(t.amount), 0);
 
     // ─── 3b. Todos os pendentes futuros para projeção 60 dias ─────────────────
-    const [allFutureReceivables, allFuturePayables] = await Promise.all([
-      prisma.transaction.findMany({
-        where: { companyId, type: "INCOME", status: pendingStatusFilter, dueDate: { gte: today } },
-        select: { dueDate: true, amount: true },
-      }),
-      prisma.transaction.findMany({
-        where: { companyId, type: "EXPENSE", status: pendingStatusFilter, dueDate: { gte: today } },
-        select: { dueDate: true, amount: true },
-      }),
-    ]);
+    const allFutureReceivables = await prisma.transaction.findMany({
+      where: { companyId, type: "INCOME", status: pendingStatusFilter, dueDate: { gte: today } },
+      select: { dueDate: true, amount: true },
+    });
+    const allFuturePayables = await prisma.transaction.findMany({
+      where: { companyId, type: "EXPENSE", status: pendingStatusFilter, dueDate: { gte: today } },
+      select: { dueDate: true, amount: true },
+    });
 
     // ─── 4. Projeção de caixa (60 dias) ──────────────────────────────────────
     const projectionDays = 60;
@@ -257,6 +250,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error("Cash flow error:", error);
-    return NextResponse.json({ error: "Erro ao carregar fluxo de caixa" }, { status: 500 });
+    return NextResponse.json({ error: "Erro ao carregar fluxo de caixa", detail: String(error) }, { status: 500 });
   }
 }

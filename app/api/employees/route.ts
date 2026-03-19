@@ -93,7 +93,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ employees, departments, totalMonthlyPayroll });
   } catch (e) {
     console.error(e);
-    return NextResponse.json({ error: "Erro ao buscar colaboradores" }, { status: 500 });
+    return NextResponse.json({ error: "Erro ao buscar colaboradores", detail: String(e) }, { status: 500 });
   }
 }
 

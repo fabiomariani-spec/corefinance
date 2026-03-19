@@ -447,7 +447,9 @@ export default function DashboardPage() {
         {/* ═══════════════════════════════════════════════
             RESULTADO FINANCEIRO — Receita / Despesas / Lucro / Margem
         ═══════════════════════════════════════════════ */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div>
+          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">Resultado Financeiro</p>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {/* Receita */}
           <KpiCard
             title="Receita"
@@ -511,10 +513,15 @@ export default function DashboardPage() {
           />
         </div>
 
+        </div>
+        </div>
+
         {/* ═══════════════════════════════════════════════
             LINHA 1 — Cards principais
         ═══════════════════════════════════════════════ */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <div>
+          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">Indicadores Operacionais</p>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
 
           {/* Caixa Atual */}
           <KpiCard
@@ -671,6 +678,7 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
+        </div>
         </div>
 
         {/* ═══════════════════════════════════════════════
