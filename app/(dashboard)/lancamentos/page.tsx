@@ -773,7 +773,6 @@ export default function TransactionsPage() {
                 )}
                 {/* ─── Variable compensation rows ─── */}
                 {!loading && varEmployees
-                  .filter((emp) => (varRecords[emp.id] ?? 0) > 0)
                   .map((emp) => {
                     const variable = varRecords[emp.id] ?? 0;
                     const total = Number(emp.salary) + variable;
@@ -783,11 +782,11 @@ export default function TransactionsPage() {
                     const competenceDate = `${month}-01`;
                     const dueDate = `${y}-${m}-${dueDay}`;
                     return (
-                      <tr key={`var-${emp.id}`} className="border-b border-zinc-800/50 bg-amber-600/5">
+                      <tr key={`var-${emp.id}`} className={`border-b border-zinc-800/50 ${variable > 0 ? "bg-amber-600/5" : ""}`}>
                         <td className="px-4 py-3 w-10" />
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
-                            <DollarSign className="w-4 h-4 text-amber-500 shrink-0" />
+                            <DollarSign className={`w-4 h-4 shrink-0 ${variable > 0 ? "text-amber-500" : "text-zinc-500"}`} />
                             <div>
                               <p className="text-zinc-100 font-medium">{emp.name}</p>
                               {emp.role && <p className="text-xs text-zinc-500">{emp.role}</p>}
@@ -796,8 +795,8 @@ export default function TransactionsPage() {
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5">
-                            <div className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
-                            <span className="text-zinc-300 text-xs">Remuneração Variável</span>
+                            <div className={`w-2 h-2 rounded-full shrink-0 ${variable > 0 ? "bg-amber-500" : "bg-zinc-500"}`} />
+                            <span className="text-zinc-300 text-xs">{variable > 0 ? "Remuneração Variável" : "Folha de Pagamento"}</span>
                           </div>
                         </td>
                         <td className="px-4 py-3">
@@ -809,7 +808,11 @@ export default function TransactionsPage() {
                           ) : <span className="text-zinc-600 text-xs">—</span>}
                         </td>
                         <td className="px-4 py-3 text-right">
-                          <span className="text-amber-400 text-xs font-semibold">{formatCurrency(variable)}</span>
+                          {variable > 0 ? (
+                            <span className="text-amber-400 text-xs font-semibold">{formatCurrency(variable)}</span>
+                          ) : (
+                            <span className="text-zinc-600 text-xs">—</span>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-zinc-400 text-xs">{formatDate(competenceDate)}</td>
                         <td className="px-4 py-3 text-zinc-400 text-xs">{formatDate(dueDate)}</td>
