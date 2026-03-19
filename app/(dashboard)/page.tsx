@@ -511,9 +511,7 @@ export default function DashboardPage() {
               : "red"
             }
           />
-        </div>
-
-        </div>
+          </div>
         </div>
 
         {/* ═══════════════════════════════════════════════
@@ -678,7 +676,7 @@ export default function DashboardPage() {
               </div>
             )}
           </div>
-        </div>
+          </div>
         </div>
 
         {/* ═══════════════════════════════════════════════

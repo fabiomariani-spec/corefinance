@@ -194,13 +194,13 @@ export function Sidebar() {
                         href={item.href}
                         title={item.label}
                         className={cn(
-                          "flex justify-center px-2 py-2 rounded-lg transition-all duration-150",
+                          "flex justify-center px-3 py-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] items-center",
                           isActive
                             ? "bg-indigo-600/15 text-indigo-400"
                             : "text-zinc-600 hover:text-zinc-100 hover:bg-zinc-800/70"
                         )}
                       >
-                        <Icon className="w-3.5 h-3.5" />
+                        <Icon className="w-4 h-4" />
                       </Link>
                     );
                   })}
