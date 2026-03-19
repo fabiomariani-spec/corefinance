@@ -13,6 +13,7 @@ import {
   UserRound, Plus, Pencil, Pause, Play, UserX, Trash2,
   Loader2, Check, AlertTriangle, Users, TrendingDown,
   Building2, ChevronDown, ChevronRight, Search, ExternalLink,
+  DollarSign, Save, ChevronLeft,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { format } from "date-fns";
@@ -252,6 +253,18 @@ export default function ColaboradoresPage() {
   const [expandedDepts, setExpandedDepts] = useState<Set<string>>(new Set());
   const [tab, setTab] = useState("lista");
 
+  // Variable compensation state
+  const [varSearch, setVarSearch] = useState("");
+  const [varDeptFilter, setVarDeptFilter] = useState("__all__");
+  const [varMonth, setVarMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [varRecords, setVarRecords] = useState<Record<string, { amount: number; description: string | null }>>({});
+  const [varDraft, setVarDraft] = useState<Record<string, string>>({});
+  const [varSaving, setVarSaving] = useState<string | null>(null);
+  const [varLoading, setVarLoading] = useState(false);
+
   async function load() {
     setLoading(true);
     try {
@@ -271,6 +284,41 @@ export default function ColaboradoresPage() {
   }
 
   useEffect(() => { load(); }, []);
+
+  // Load variable compensation when month changes
+  async function loadVariable(month: string) {
+    setVarLoading(true);
+    try {
+      const res = await fetch(`/api/employees/variable?month=${month}`);
+      const d = await res.json();
+      if (d.records) {
+        setVarRecords(d.records);
+        const draft: Record<string, string> = {};
+        for (const [empId, v] of Object.entries(d.records)) {
+          draft[empId] = String((v as { amount: number }).amount);
+        }
+        setVarDraft(draft);
+      }
+    } catch { /* ignore */ }
+    finally { setVarLoading(false); }
+  }
+
+  useEffect(() => {
+    if (tab === "variavel") loadVariable(varMonth);
+  }, [tab, varMonth]);
+
+  async function saveVariable(employeeId: string) {
+    setVarSaving(employeeId);
+    try {
+      const amount = parseFloat(varDraft[employeeId] || "0");
+      await fetch("/api/employees/variable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employeeId, month: varMonth, amount }),
+      });
+      await loadVariable(varMonth);
+    } finally { setVarSaving(null); }
+  }
 
   // Filtered list
   const filtered = useMemo(() => {
@@ -385,6 +433,7 @@ export default function ColaboradoresPage() {
           <TabsList className="bg-zinc-900 border border-zinc-800">
             <TabsTrigger value="lista" className="text-xs"><Users className="w-3.5 h-3.5 mr-1.5" />Colaboradores</TabsTrigger>
             <TabsTrigger value="departamentos" className="text-xs"><Building2 className="w-3.5 h-3.5 mr-1.5" />Por Departamento</TabsTrigger>
+            <TabsTrigger value="variavel" className="text-xs"><DollarSign className="w-3.5 h-3.5 mr-1.5" />Variável</TabsTrigger>
             <TabsTrigger value="simulacao" className="text-xs"><TrendingDown className="w-3.5 h-3.5 mr-1.5" />Simulações</TabsTrigger>
           </TabsList>
 
@@ -623,6 +672,213 @@ export default function ColaboradoresPage() {
                 );
               })
             )}
+          </TabsContent>
+
+          {/* ─── TAB: Variável ──────────────────────────────────── */}
+          <TabsContent value="variavel" className="space-y-4 mt-4">
+            {(() => {
+              const activeEmps = (data?.employees ?? [])
+                .filter((e) => e.status === "ACTIVE")
+                .filter((e) => !varSearch || e.name.toLowerCase().includes(varSearch.toLowerCase()))
+                .filter((e) => varDeptFilter === "__all__" || e.departmentId === varDeptFilter);
+              const totalFixo = activeEmps.reduce((s, e) => s + Number(e.salary), 0);
+              const totalVar = activeEmps.reduce((s, e) => s + (varRecords[e.id] ? Number(varRecords[e.id].amount) : 0), 0);
+
+              // Group by dept
+              const deptMap = new Map<string, { name: string; color: string; fixo: number; variavel: number; count: number }>();
+              for (const emp of activeEmps) {
+                const dKey = emp.departmentId ?? "__none__";
+                const dName = emp.department?.name ?? "Sem Departamento";
+                const dColor = emp.department?.color ?? "#6b7280";
+                if (!deptMap.has(dKey)) deptMap.set(dKey, { name: dName, color: dColor, fixo: 0, variavel: 0, count: 0 });
+                const d = deptMap.get(dKey)!;
+                d.fixo += Number(emp.salary);
+                d.variavel += varRecords[emp.id] ? Number(varRecords[emp.id].amount) : 0;
+                d.count += 1;
+              }
+              const deptSummary = Array.from(deptMap.values()).sort((a, b) => (b.fixo + b.variavel) - (a.fixo + a.variavel));
+
+              return (
+                <>
+                  {/* Month selector + search + dept filter */}
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => {
+                        const [y, m] = varMonth.split("-").map(Number);
+                        const d = new Date(y, m - 2, 1);
+                        setVarMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+                      }} className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200">
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <span className="text-sm font-semibold text-zinc-100 min-w-[140px] text-center">
+                        {new Date(Number(varMonth.split("-")[0]), Number(varMonth.split("-")[1]) - 1).toLocaleDateString("pt-BR", { month: "long", year: "numeric" }).replace(/^\w/, (c) => c.toUpperCase())}
+                      </span>
+                      <button onClick={() => {
+                        const [y, m] = varMonth.split("-").map(Number);
+                        const d = new Date(y, m, 1);
+                        setVarMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+                      }} className="p-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200">
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-2 flex-1 min-w-[260px]">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                        <Input
+                          placeholder="Buscar colaborador..."
+                          className="pl-9 h-9 text-sm"
+                          value={varSearch}
+                          onChange={(e) => setVarSearch(e.target.value)}
+                        />
+                      </div>
+                      <Select value={varDeptFilter} onValueChange={setVarDeptFilter}>
+                        <SelectTrigger className="w-44 h-9 text-sm">
+                          <SelectValue placeholder="Departamento" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="__all__">Todos os departamentos</SelectItem>
+                          {(data?.departments ?? []).map((d) => (
+                            <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  {/* Summary cards */}
+                  <div className="grid grid-cols-4 gap-3">
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                      <p className="text-xs text-zinc-500">Total Fixo</p>
+                      <p className="text-lg font-bold text-red-400 mt-1">{formatCurrency(totalFixo)}</p>
+                    </div>
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                      <p className="text-xs text-zinc-500">Total Variável</p>
+                      <p className="text-lg font-bold text-amber-400 mt-1">{formatCurrency(totalVar)}</p>
+                    </div>
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                      <p className="text-xs text-zinc-500">Total Geral</p>
+                      <p className="text-lg font-bold text-zinc-100 mt-1">{formatCurrency(totalFixo + totalVar)}</p>
+                    </div>
+                    <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                      <p className="text-xs text-zinc-500">% Variável</p>
+                      <p className="text-lg font-bold text-indigo-400 mt-1">{(totalFixo + totalVar) > 0 ? ((totalVar / (totalFixo + totalVar)) * 100).toFixed(1) : "0.0"}%</p>
+                    </div>
+                  </div>
+
+                  {/* Department breakdown */}
+                  {deptSummary.length > 0 && (
+                    <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+                      {deptSummary.map((d) => (
+                        <div key={d.name} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="w-2.5 h-2.5 rounded-full" style={{ background: d.color }} />
+                            <span className="text-xs font-semibold text-zinc-200">{d.name}</span>
+                            <span className="text-xs text-zinc-500 ml-auto">{d.count} pessoas</span>
+                          </div>
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-zinc-500">Fixo</span>
+                            <span className="text-red-400 font-semibold">{formatCurrency(d.fixo)}</span>
+                          </div>
+                          <div className="flex items-center justify-between text-xs mt-1">
+                            <span className="text-zinc-500">Variável</span>
+                            <span className="text-amber-400 font-semibold">{formatCurrency(d.variavel)}</span>
+                          </div>
+                          <div className="flex items-center justify-between text-xs mt-1 pt-1 border-t border-zinc-800">
+                            <span className="text-zinc-400 font-semibold">Total</span>
+                            <span className="text-zinc-100 font-bold">{formatCurrency(d.fixo + d.variavel)}</span>
+                          </div>
+                          {(d.fixo + d.variavel) > 0 && (
+                            <div className="h-1.5 rounded-full bg-zinc-800 mt-2 overflow-hidden flex">
+                              <div className="h-full bg-red-500" style={{ width: `${(d.fixo / (d.fixo + d.variavel)) * 100}%` }} />
+                              <div className="h-full bg-amber-500" style={{ width: `${(d.variavel / (d.fixo + d.variavel)) * 100}%` }} />
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Employee variable input table */}
+                  <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+                    <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
+                      <span className="text-sm font-semibold text-zinc-100">Remuneração Variável por Colaborador</span>
+                      {varLoading && <Loader2 className="w-4 h-4 animate-spin text-zinc-500" />}
+                    </div>
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-zinc-800">
+                          <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500">Colaborador</th>
+                          <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500">Departamento</th>
+                          <th className="text-right px-4 py-3 text-xs font-semibold text-zinc-500">Fixo</th>
+                          <th className="text-right px-4 py-3 text-xs font-semibold text-zinc-500 w-48">Variável (R$)</th>
+                          <th className="text-right px-4 py-3 text-xs font-semibold text-zinc-500">Total</th>
+                          <th className="w-12 px-4 py-3" />
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeEmps.length === 0 ? (
+                          <tr><td colSpan={6} className="text-center py-10 text-xs text-zinc-500">Nenhum colaborador ativo</td></tr>
+                        ) : (
+                          activeEmps.map((emp) => {
+                            const fixo = Number(emp.salary);
+                            const varValue = parseFloat(varDraft[emp.id] || "0") || 0;
+                            const saved = varRecords[emp.id]?.amount ?? 0;
+                            const hasChange = varValue !== saved;
+                            return (
+                              <tr key={emp.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/20">
+                                <td className="px-4 py-3">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-7 h-7 rounded-full bg-indigo-600/20 flex items-center justify-center shrink-0">
+                                      <span className="text-xs font-bold text-indigo-400">{emp.name.charAt(0)}</span>
+                                    </div>
+                                    <div>
+                                      <p className="text-xs font-semibold text-zinc-100">{emp.name}</p>
+                                      {emp.role && <p className="text-xs text-zinc-500">{emp.role}</p>}
+                                    </div>
+                                  </div>
+                                </td>
+                                <td className="px-4 py-3">
+                                  {emp.department ? (
+                                    <span className="inline-flex items-center gap-1 text-xs text-zinc-300">
+                                      <span className="w-2 h-2 rounded-full" style={{ background: emp.department.color ?? "#6366f1" }} />
+                                      {emp.department.name}
+                                    </span>
+                                  ) : <span className="text-xs text-zinc-600">—</span>}
+                                </td>
+                                <td className="px-4 py-3 text-right text-xs font-semibold text-red-400">{formatCurrency(fixo)}</td>
+                                <td className="px-4 py-3">
+                                  <Input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={varDraft[emp.id] ?? ""}
+                                    onChange={(e) => setVarDraft((p) => ({ ...p, [emp.id]: e.target.value }))}
+                                    onKeyDown={(e) => { if (e.key === "Enter") saveVariable(emp.id); }}
+                                    placeholder="0,00"
+                                    className="h-7 text-xs text-right bg-zinc-800 border-zinc-700 w-full"
+                                  />
+                                </td>
+                                <td className="px-4 py-3 text-right text-xs font-bold text-zinc-100">{formatCurrency(fixo + varValue)}</td>
+                                <td className="px-4 py-3">
+                                  <button
+                                    onClick={() => saveVariable(emp.id)}
+                                    disabled={!hasChange || varSaving === emp.id}
+                                    className={`p-1.5 rounded transition-colors ${hasChange ? "hover:bg-emerald-900/30 text-emerald-400" : "text-zinc-700 cursor-default"}`}
+                                    title="Salvar"
+                                  >
+                                    {varSaving === emp.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              );
+            })()}
           </TabsContent>
 
           {/* ─── TAB 3: Simulações ────────────────────────────────── */}
