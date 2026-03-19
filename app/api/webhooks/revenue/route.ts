@@ -1,6 +1,51 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+// Detect if payload is from a sales platform (Kiwify/Hotmart/Eduzz style)
+function isPlatformPayload(body: Record<string, unknown>) {
+  return body.object === "order" && body.product && body.price !== undefined;
+}
+
+// Normalize platform payload to our internal format
+function normalizePlatform(body: Record<string, unknown>) {
+  const product = body.product as { name?: string } | undefined;
+  const customer = body.customer as { name?: string; lastname?: string; email?: string; phone?: string } | undefined;
+  const offerName = body.offer_name as string | undefined;
+
+  // Price is in centavos (9700 = R$ 97.00)
+  const priceRaw = Number(body.price ?? body.offer_price ?? 0);
+  const amount = priceRaw >= 100 ? priceRaw / 100 : priceRaw; // auto-detect cents vs reais
+
+  const customerName = [customer?.name, customer?.lastname].filter(Boolean).join(" ").trim() || null;
+  const purchaseDate = body.purchase_date
+    ? String(body.purchase_date).slice(0, 10) // "2026-03-19 19:51:29" → "2026-03-19"
+    : null;
+
+  const status = body.status === "PAID" || body.status === "APPROVED" ? "RECEIVED" : "PENDING";
+
+  // Build notes with useful metadata
+  const notes = [
+    offerName ? `Oferta: ${offerName}` : null,
+    body.payment_type ? `Pagamento: ${body.payment_type}` : null,
+    customer?.email ? `Email: ${customer.email}` : null,
+    customer?.phone ? `Tel: ${customer.phone}` : null,
+    body.utm_source ? `UTM: ${body.utm_source}/${body.utm_medium}/${body.utm_campaign}` : null,
+  ].filter(Boolean).join(" | ");
+
+  return {
+    description: product?.name ?? offerName ?? "Venda",
+    amount,
+    contactName: customerName,
+    competenceDate: purchaseDate,
+    dueDate: purchaseDate,
+    status,
+    externalId: `order_${body.id}`,
+    notes: notes || null,
+    categoryName: null as string | null,
+    departmentName: null as string | null,
+  };
+}
+
 export async function POST(request: NextRequest) {
   try {
     // Auth via secret header
@@ -16,7 +61,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Company not configured" }, { status: 500 });
     }
 
-    const body = await request.json();
+    const rawBody = await request.json();
+
+    // Normalize: detect platform payloads vs direct format
+    const data = isPlatformPayload(rawBody) ? normalizePlatform(rawBody) : rawBody;
+
     const {
       description,
       amount,
@@ -28,7 +77,7 @@ export async function POST(request: NextRequest) {
       status,
       notes,
       externalId,
-    } = body;
+    } = data;
 
     if (!description || !amount || Number(amount) <= 0) {
       return NextResponse.json({ error: "description e amount (> 0) são obrigatórios" }, { status: 400 });
@@ -79,23 +128,25 @@ export async function POST(request: NextRequest) {
     const tags: string[] = [];
     if (externalId) tags.push(`ext:${externalId}`);
 
+    const txStatus = status === "RECEIVED" ? "RECEIVED" : "PENDING";
+
     const transaction = await prisma.transaction.create({
       data: {
         companyId,
-        description,
+        description: String(description),
         amount: Number(amount),
         type: "INCOME",
-        status: status === "RECEIVED" ? "RECEIVED" : "PENDING",
+        status: txStatus,
         isPredicted: false,
         isRecurring: false,
         categoryId,
         departmentId,
         contactId,
-        competenceDate: competenceDate ? new Date(competenceDate + "T12:00:00") : new Date(),
-        dueDate: dueDate ? new Date(dueDate + "T12:00:00") : null,
-        paymentDate: status === "RECEIVED" ? new Date() : null,
+        competenceDate: competenceDate ? new Date(String(competenceDate).slice(0, 10) + "T12:00:00") : new Date(),
+        dueDate: dueDate ? new Date(String(dueDate).slice(0, 10) + "T12:00:00") : null,
+        paymentDate: txStatus === "RECEIVED" ? new Date() : null,
         tags,
-        notes: notes || null,
+        notes: notes ? String(notes) : null,
       },
     });
 
