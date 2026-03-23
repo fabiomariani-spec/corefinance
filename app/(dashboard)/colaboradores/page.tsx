@@ -260,8 +260,9 @@ export default function ColaboradoresPage() {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   });
-  const [varRecords, setVarRecords] = useState<Record<string, { amount: number; description: string | null }>>({});
+  const [varRecords, setVarRecords] = useState<Record<string, { amount: number; description: string | null; paymentDate: string | null }>>({});
   const [varDraft, setVarDraft] = useState<Record<string, string>>({});
+  const [varDateDraft, setVarDateDraft] = useState<Record<string, string>>({});
   const [varSaving, setVarSaving] = useState<string | null>(null);
   const [varLoading, setVarLoading] = useState(false);
 
@@ -294,10 +295,14 @@ export default function ColaboradoresPage() {
       if (d.records) {
         setVarRecords(d.records);
         const draft: Record<string, string> = {};
+        const dateDraft: Record<string, string> = {};
         for (const [empId, v] of Object.entries(d.records)) {
-          draft[empId] = String((v as { amount: number }).amount);
+          const rec = v as { amount: number; paymentDate: string | null };
+          draft[empId] = String(rec.amount);
+          dateDraft[empId] = rec.paymentDate ?? "";
         }
         setVarDraft(draft);
+        setVarDateDraft(dateDraft);
       }
     } catch { /* ignore */ }
     finally { setVarLoading(false); }
@@ -311,10 +316,11 @@ export default function ColaboradoresPage() {
     setVarSaving(employeeId);
     try {
       const amount = parseFloat(varDraft[employeeId] || "0");
+      const paymentDate = varDateDraft[employeeId] || null;
       await fetch("/api/employees/variable", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ employeeId, month: varMonth, amount }),
+        body: JSON.stringify({ employeeId, month: varMonth, amount, paymentDate }),
       });
       await loadVariable(varMonth);
     } finally { setVarSaving(null); }
@@ -810,20 +816,23 @@ export default function ColaboradoresPage() {
                           <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500">Colaborador</th>
                           <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500">Departamento</th>
                           <th className="text-right px-4 py-3 text-xs font-semibold text-zinc-500">Fixo</th>
-                          <th className="text-right px-4 py-3 text-xs font-semibold text-zinc-500 w-48">Variável (R$)</th>
+                          <th className="text-right px-4 py-3 text-xs font-semibold text-zinc-500 w-36">Variável (R$)</th>
+                          <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500 w-40">Data Pagamento</th>
                           <th className="text-right px-4 py-3 text-xs font-semibold text-zinc-500">Total</th>
                           <th className="w-12 px-4 py-3" />
                         </tr>
                       </thead>
                       <tbody>
                         {activeEmps.length === 0 ? (
-                          <tr><td colSpan={6} className="text-center py-10 text-xs text-zinc-500">Nenhum colaborador ativo</td></tr>
+                          <tr><td colSpan={7} className="text-center py-10 text-xs text-zinc-500">Nenhum colaborador ativo</td></tr>
                         ) : (
                           activeEmps.map((emp) => {
                             const fixo = Number(emp.salary);
                             const varValue = parseFloat(varDraft[emp.id] || "0") || 0;
                             const saved = varRecords[emp.id]?.amount ?? 0;
-                            const hasChange = varValue !== saved;
+                            const savedDate = varRecords[emp.id]?.paymentDate ?? "";
+                            const draftDate = varDateDraft[emp.id] ?? "";
+                            const hasChange = varValue !== saved || draftDate !== savedDate;
                             return (
                               <tr key={emp.id} className="border-b border-zinc-800/50 hover:bg-zinc-800/20">
                                 <td className="px-4 py-3">
@@ -856,6 +865,15 @@ export default function ColaboradoresPage() {
                                     onKeyDown={(e) => { if (e.key === "Enter") saveVariable(emp.id); }}
                                     placeholder="0,00"
                                     className="h-7 text-xs text-right bg-zinc-800 border-zinc-700 w-full"
+                                  />
+                                </td>
+                                <td className="px-4 py-3">
+                                  <Input
+                                    type="date"
+                                    value={varDateDraft[emp.id] ?? ""}
+                                    onChange={(e) => setVarDateDraft((p) => ({ ...p, [emp.id]: e.target.value }))}
+                                    onKeyDown={(e) => { if (e.key === "Enter") saveVariable(emp.id); }}
+                                    className="h-7 text-xs bg-zinc-800 border-zinc-700 w-full"
                                   />
                                 </td>
                                 <td className="px-4 py-3 text-right text-xs font-bold text-zinc-100">{formatCurrency(fixo + varValue)}</td>
