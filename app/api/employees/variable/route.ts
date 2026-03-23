@@ -16,6 +16,7 @@ export async function GET(request: NextRequest) {
         amount: true,
         description: true,
         month: true,
+        paymentDate: true,
       },
     });
 
@@ -40,9 +41,13 @@ export async function GET(request: NextRequest) {
       .slice(0, 6);
 
     // Employee totals for the requested month
-    const employeeMap = new Map<string, { amount: number; description: string | null }>();
+    const employeeMap = new Map<string, { amount: number; description: string | null; paymentDate: string | null }>();
     for (const r of records) {
-      employeeMap.set(r.employeeId, { amount: Number(r.amount), description: r.description });
+      employeeMap.set(r.employeeId, {
+        amount: Number(r.amount),
+        description: r.description,
+        paymentDate: r.paymentDate ? r.paymentDate.toISOString().split("T")[0] : null,
+      });
     }
 
     return NextResponse.json({
@@ -71,7 +76,7 @@ export async function POST(request: NextRequest) {
   try {
     const companyId = await getCompanyId();
     const body = await request.json();
-    const { employeeId, month, amount, description } = body;
+    const { employeeId, month, amount, description, paymentDate } = body;
 
     if (!employeeId || !month) {
       return NextResponse.json({ error: "employeeId e month são obrigatórios" }, { status: 400 });
@@ -91,11 +96,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, deleted: true });
     }
 
+    // Resolve payment date: user override or fall back to employee.dueDayOfMonth
+    const resolvedPaymentDate: Date | null = paymentDate
+      ? new Date(paymentDate + "T12:00:00")
+      : null;
+
     // Upsert variable compensation
     const record = await prisma.variableCompensation.upsert({
       where: { employeeId_month: { employeeId, month } },
-      update: { amount: numAmount, description: description || null },
-      create: { companyId, employeeId, month, amount: numAmount, description: description || null },
+      update: { amount: numAmount, description: description || null, paymentDate: resolvedPaymentDate },
+      create: { companyId, employeeId, month, amount: numAmount, description: description || null, paymentDate: resolvedPaymentDate },
     });
 
     // Get employee details for the transaction
@@ -110,9 +120,10 @@ export async function POST(request: NextRequest) {
 
     const categoryId = await findOrCreateVarCategory(companyId);
     const [y, m] = month.split("-");
-    const dueDay = String(employee.dueDayOfMonth ?? 5).padStart(2, "0");
     const competenceDate = new Date(`${month}-01T12:00:00`);
-    const dueDate = new Date(`${y}-${m}-${dueDay}T12:00:00`);
+    // Use user-selected date if provided, otherwise derive from employee.dueDayOfMonth
+    const dueDate = resolvedPaymentDate
+      ?? new Date(`${y}-${m}-${String(employee.dueDayOfMonth ?? 5).padStart(2, "0")}T12:00:00`);
     const txDescription = `Remuneração Variável — ${employee.name}`;
 
     // Upsert transaction (find by tag, update or create)
@@ -127,6 +138,7 @@ export async function POST(request: NextRequest) {
           amount: numAmount,
           description: txDescription,
           notes: description || null,
+          dueDate,
         },
       });
     } else {

@@ -485,9 +485,10 @@ model VariableCompensation {
   companyId   String
   employeeId  String
   month       String   // "2026-03" format
-  amount      Decimal  @db.Decimal(15, 2)
+  amount      Decimal   @db.Decimal(15, 2)
   description String?
-  createdAt   DateTime @default(now())
+  paymentDate DateTime? // Override do dia de pagamento da variável
+  createdAt   DateTime  @default(now())
   updatedAt   DateTime @updatedAt
 
   company  Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)

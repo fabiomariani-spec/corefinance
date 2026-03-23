@@ -40,6 +40,7 @@ import {
   X,
   CalendarRange,
   Loader2,
+  SlidersHorizontal,
 } from "lucide-react";
 
 interface Transaction {
@@ -120,12 +121,17 @@ export default function TransactionsPage() {
   const deptDropdownRef = useRef<HTMLDivElement>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [showMoreFilters, setShowMoreFilters] = useState(false);
 
   // Bulk selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const selectAllRef = useRef<HTMLInputElement>(null);
+
+  // Single delete dialog
+  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  const [singleDeleting, setSingleDeleting] = useState(false);
 
 
   const limit = 20;
@@ -241,10 +247,16 @@ export default function TransactionsPage() {
     }
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm("Excluir este lançamento?")) return;
-    await fetch(`/api/transactions/${id}`, { method: "DELETE" });
-    fetchTransactions();
+  async function handleDelete() {
+    if (!deleteTargetId) return;
+    setSingleDeleting(true);
+    try {
+      await fetch(`/api/transactions/${deleteTargetId}`, { method: "DELETE" });
+      setDeleteTargetId(null);
+      fetchTransactions();
+    } finally {
+      setSingleDeleting(false);
+    }
   }
 
   async function handleStatusUpdate(id: string, newStatus: string) {
@@ -391,137 +403,173 @@ export default function TransactionsPage() {
         <div className="mt-4 space-y-5">
 
         {/* Filters + Actions */}
-        <div className="flex items-center gap-3 flex-wrap">
-          {/* Search */}
-          <div className="relative flex-1 min-w-[180px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-            <Input
-              placeholder="Buscar lançamentos..."
-              className="pl-9"
-              value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            />
-          </div>
+        <div className="space-y-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Search */}
+            <div className="relative flex-1 min-w-[180px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+              <Input
+                placeholder="Buscar lançamentos..."
+                className="pl-9"
+                value={search}
+                onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              />
+            </div>
 
-          {/* Date range picker */}
-          <div ref={datePickerRef} className="relative">
+            {/* Date range picker */}
+            <div ref={datePickerRef} className="relative">
+              <button
+                onClick={() => setShowDatePicker((v) => !v)}
+                className="flex items-center gap-2 h-10 px-3 rounded-md border border-zinc-700 bg-zinc-900 text-sm text-zinc-200 hover:border-zinc-500 transition-colors whitespace-nowrap"
+              >
+                <CalendarRange className="w-4 h-4 text-zinc-400 shrink-0" />
+                <span>{dateFrom ? fmtDisplayDate(dateFrom) : "Início"}</span>
+                <span className="text-zinc-600">→</span>
+                <span>{dateTo ? fmtDisplayDate(dateTo) : "Fim"}</span>
+                <ChevronDown className="w-3.5 h-3.5 text-zinc-500 ml-1" />
+              </button>
+              {showDatePicker && (
+                <div className="absolute top-12 left-0 z-50 bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl p-4 w-72 space-y-4">
+                  {/* Quick shortcuts */}
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {[
+                      { label: "Este mês",      from: toDateStr(new Date(NOW.getFullYear(), NOW.getMonth(), 1)),       to: toDateStr(new Date(NOW.getFullYear(), NOW.getMonth() + 1, 0)) },
+                      { label: "Mês passado",   from: toDateStr(new Date(NOW.getFullYear(), NOW.getMonth() - 1, 1)),   to: toDateStr(new Date(NOW.getFullYear(), NOW.getMonth(), 0)) },
+                      { label: "Próx. 30 dias", from: toDateStr(NOW),                                                   to: toDateStr(new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate() + 30)) },
+                      { label: "Próx. 3 meses", from: toDateStr(NOW),                                                   to: toDateStr(new Date(NOW.getFullYear(), NOW.getMonth() + 3, 0)) },
+                      { label: "Este ano",      from: toDateStr(new Date(NOW.getFullYear(), 0, 1)),                     to: toDateStr(new Date(NOW.getFullYear(), 11, 31)) },
+                      { label: "Todos",         from: "",                                                               to: "" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.label}
+                        onClick={() => { setDateFrom(opt.from); setDateTo(opt.to); setPage(1); setShowDatePicker(false); }}
+                        className="px-2 py-1.5 text-xs rounded-md border border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors text-left"
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="border-t border-zinc-800 pt-3 space-y-2">
+                    <p className="text-xs text-zinc-500 font-medium">Intervalo personalizado</p>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1">
+                        <label className="text-xs text-zinc-500 mb-1 block">De</label>
+                        <input
+                          type="date"
+                          value={dateFrom}
+                          onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
+                          className="w-full h-8 px-2 text-xs rounded-md border border-zinc-700 bg-zinc-800 text-zinc-200 focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <label className="text-xs text-zinc-500 mb-1 block">Até</label>
+                        <input
+                          type="date"
+                          value={dateTo}
+                          onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
+                          className="w-full h-8 px-2 text-xs rounded-md border border-zinc-700 bg-zinc-800 text-zinc-200 focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                    </div>
+                    <Button size="sm" className="w-full h-8 text-xs mt-1" onClick={() => setShowDatePicker(false)}>
+                      Aplicar
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* More Filters toggle */}
             <button
-              onClick={() => setShowDatePicker((v) => !v)}
-              className="flex items-center gap-2 h-10 px-3 rounded-md border border-zinc-700 bg-zinc-900 text-sm text-zinc-200 hover:border-zinc-500 transition-colors whitespace-nowrap"
+              onClick={() => setShowMoreFilters((v) => !v)}
+              className={`flex items-center gap-1.5 h-10 px-3 rounded-md border text-sm transition-colors whitespace-nowrap ${
+                showMoreFilters || departmentFilter !== "all" || typeFilter !== "all" || statusFilter !== "all"
+                  ? "border-indigo-500/50 bg-indigo-600/10 text-indigo-300"
+                  : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
+              }`}
             >
-              <CalendarRange className="w-4 h-4 text-zinc-400 shrink-0" />
-              <span>{dateFrom ? fmtDisplayDate(dateFrom) : "Início"}</span>
-              <span className="text-zinc-600">→</span>
-              <span>{dateTo ? fmtDisplayDate(dateTo) : "Fim"}</span>
-              <ChevronDown className="w-3.5 h-3.5 text-zinc-500 ml-1" />
+              <SlidersHorizontal className="w-4 h-4" />
+              Filtros
+              {(departmentFilter !== "all" || typeFilter !== "all" || statusFilter !== "all") && (
+                <span className="w-5 h-5 rounded-full bg-indigo-600 text-white text-xs flex items-center justify-center font-semibold">
+                  {[departmentFilter !== "all", typeFilter !== "all", statusFilter !== "all"].filter(Boolean).length}
+                </span>
+              )}
             </button>
-            {showDatePicker && (
-              <div className="absolute top-12 left-0 z-50 bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl p-4 w-72 space-y-4">
-                {/* Quick shortcuts */}
-                <div className="grid grid-cols-2 gap-1.5">
-                  {[
-                    { label: "Este mês",      from: toDateStr(new Date(NOW.getFullYear(), NOW.getMonth(), 1)),       to: toDateStr(new Date(NOW.getFullYear(), NOW.getMonth() + 1, 0)) },
-                    { label: "Mês passado",   from: toDateStr(new Date(NOW.getFullYear(), NOW.getMonth() - 1, 1)),   to: toDateStr(new Date(NOW.getFullYear(), NOW.getMonth(), 0)) },
-                    { label: "Próx. 30 dias", from: toDateStr(NOW),                                                   to: toDateStr(new Date(NOW.getFullYear(), NOW.getMonth(), NOW.getDate() + 30)) },
-                    { label: "Próx. 3 meses", from: toDateStr(NOW),                                                   to: toDateStr(new Date(NOW.getFullYear(), NOW.getMonth() + 3, 0)) },
-                    { label: "Este ano",      from: toDateStr(new Date(NOW.getFullYear(), 0, 1)),                     to: toDateStr(new Date(NOW.getFullYear(), 11, 31)) },
-                    { label: "Todos",         from: "",                                                               to: "" },
-                  ].map((opt) => (
-                    <button
-                      key={opt.label}
-                      onClick={() => { setDateFrom(opt.from); setDateTo(opt.to); setPage(1); setShowDatePicker(false); }}
-                      className="px-2 py-1.5 text-xs rounded-md border border-zinc-700 text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors text-left"
-                    >
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="border-t border-zinc-800 pt-3 space-y-2">
-                  <p className="text-xs text-zinc-500 font-medium">Intervalo personalizado</p>
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1">
-                      <label className="text-xs text-zinc-500 mb-1 block">De</label>
-                      <input
-                        type="date"
-                        value={dateFrom}
-                        onChange={(e) => { setDateFrom(e.target.value); setPage(1); }}
-                        className="w-full h-8 px-2 text-xs rounded-md border border-zinc-700 bg-zinc-800 text-zinc-200 focus:outline-none focus:border-indigo-500"
-                      />
-                    </div>
-                    <div className="flex-1">
-                      <label className="text-xs text-zinc-500 mb-1 block">Até</label>
-                      <input
-                        type="date"
-                        value={dateTo}
-                        onChange={(e) => { setDateTo(e.target.value); setPage(1); }}
-                        className="w-full h-8 px-2 text-xs rounded-md border border-zinc-700 bg-zinc-800 text-zinc-200 focus:outline-none focus:border-indigo-500"
-                      />
-                    </div>
-                  </div>
-                  <Button size="sm" className="w-full h-8 text-xs mt-1" onClick={() => setShowDatePicker(false)}>
-                    Aplicar
-                  </Button>
-                </div>
-              </div>
-            )}
+
+            <Button
+              onClick={() => {
+                setEditingTransaction(null);
+                setModalOpen(true);
+              }}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-600/20 border-0 font-semibold"
+            >
+              <Plus className="w-4 h-4" />
+              Novo Lançamento
+            </Button>
           </div>
 
-          {/* Departamento */}
-          <Select value={departmentFilter} onValueChange={(v) => { setDepartmentFilter(v); setPage(1); }}>
-            <SelectTrigger className="w-44">
-              <SelectValue placeholder="Departamento" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todos os depart.</SelectItem>
-              {departments.map((d) => (
-                <SelectItem key={d.id} value={d.id}>
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
-                    {d.name}
-                  </div>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* Extended Filters — progressive disclosure */}
+          {showMoreFilters && (
+            <div className="flex items-center gap-3 flex-wrap pl-1 animate-in fade-in slide-in-from-top-2 duration-200">
+              {/* Departamento */}
+              <Select value={departmentFilter} onValueChange={(v) => { setDepartmentFilter(v); setPage(1); }}>
+                <SelectTrigger className="w-44">
+                  <SelectValue placeholder="Departamento" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os depart.</SelectItem>
+                  {departments.map((d) => (
+                    <SelectItem key={d.id} value={d.id}>
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: d.color }} />
+                        {d.name}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
 
-          {/* Tipo */}
-          <Select value={typeFilter} onValueChange={(v) => { setTypeFilter(v); setPage(1); }}>
-            <SelectTrigger className="w-36">
-              <SelectValue placeholder="Tipo" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todos os tipos</SelectItem>
-              <SelectItem value="INCOME">Entradas</SelectItem>
-              <SelectItem value="EXPENSE">Saídas</SelectItem>
-            </SelectContent>
-          </Select>
+              {/* Tipo */}
+              <Select value={typeFilter} onValueChange={(v) => { setTypeFilter(v); setPage(1); }}>
+                <SelectTrigger className="w-36">
+                  <SelectValue placeholder="Tipo" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os tipos</SelectItem>
+                  <SelectItem value="INCOME">Entradas</SelectItem>
+                  <SelectItem value="EXPENSE">Saídas</SelectItem>
+                </SelectContent>
+              </Select>
 
-          {/* Status */}
-          <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1); }}>
-            <SelectTrigger className="w-48">
-              <SelectValue placeholder="Status" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Todos os status</SelectItem>
-              <SelectItem value="PENDING_PAYMENTS">⚡ Pagamentos Pendentes</SelectItem>
-              <SelectItem value="PENDING">Pendente</SelectItem>
-              <SelectItem value="OVERDUE">Atrasado</SelectItem>
-              <SelectItem value="PREDICTED">Previsto</SelectItem>
-              <SelectItem value="PAID">Pago</SelectItem>
-              <SelectItem value="RECEIVED">Recebido</SelectItem>
-            </SelectContent>
-          </Select>
+              {/* Status */}
+              <Select value={statusFilter} onValueChange={(v) => { setStatusFilter(v); setPage(1); }}>
+                <SelectTrigger className="w-48">
+                  <SelectValue placeholder="Status" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os status</SelectItem>
+                  <SelectItem value="PENDING_PAYMENTS">Pagamentos Pendentes</SelectItem>
+                  <SelectItem value="PENDING">Pendente</SelectItem>
+                  <SelectItem value="OVERDUE">Atrasado</SelectItem>
+                  <SelectItem value="PREDICTED">Previsto</SelectItem>
+                  <SelectItem value="PAID">Pago</SelectItem>
+                  <SelectItem value="RECEIVED">Recebido</SelectItem>
+                </SelectContent>
+              </Select>
 
-          <Button
-            onClick={() => {
-              setEditingTransaction(null);
-              setModalOpen(true);
-            }}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-lg shadow-indigo-600/20 border-0 font-semibold"
-          >
-            <Plus className="w-4 h-4" />
-            Novo Lançamento
-          </Button>
+              {/* Clear all filters */}
+              {(departmentFilter !== "all" || typeFilter !== "all" || statusFilter !== "all") && (
+                <button
+                  onClick={() => { setDepartmentFilter("all"); setTypeFilter("all"); setStatusFilter("all"); setPage(1); }}
+                  className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  Limpar filtros
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Bulk Action Bar — visible when items are selected */}
@@ -715,7 +763,7 @@ export default function TransactionsPage() {
                             <Copy className="w-3.5 h-3.5" />
                           </button>
                           <button
-                            onClick={() => handleDelete(tx.id)}
+                            onClick={() => setDeleteTargetId(tx.id)}
                             className="p-1.5 rounded-md hover:bg-red-600/20 text-zinc-400 hover:text-red-400 transition-colors"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
@@ -760,6 +808,40 @@ export default function TransactionsPage() {
       </div>
 
     </div>
+
+      {/* Single Delete Confirmation */}
+      <Dialog open={!!deleteTargetId} onOpenChange={(open) => !open && setDeleteTargetId(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-400">
+              <AlertTriangle className="w-5 h-5" />
+              Excluir lançamento
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-2 space-y-2">
+            <p className="text-sm text-zinc-300">
+              Tem certeza que deseja excluir este lançamento?
+            </p>
+            <p className="text-xs text-zinc-500">Esta ação não pode ser desfeita.</p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteTargetId(null)} disabled={singleDeleting}>
+              Cancelar
+            </Button>
+            <Button
+              className="bg-red-600 hover:bg-red-700 text-white border-0"
+              onClick={handleDelete}
+              disabled={singleDeleting}
+            >
+              {singleDeleting ? (
+                <><Loader2 className="w-4 h-4 animate-spin" /> Excluindo...</>
+              ) : (
+                <><Trash2 className="w-4 h-4" /> Excluir</>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Bulk Delete Confirmation */}
       <Dialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
