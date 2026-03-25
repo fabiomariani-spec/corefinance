@@ -28,6 +28,7 @@ const transactionSchema = z.object({
   // Recurring helpers (stripped before DB save)
   recurringMonths: z.number().optional(),
   dueDayOfMonth: z.number().optional(),
+  openEnded: z.boolean().optional(),
 });
 
 export async function GET(request: NextRequest) {
@@ -65,8 +66,8 @@ export async function GET(request: NextRequest) {
         })()
       : (startDate || endDate)
         ? [
-            { dueDate: { ...(startDate && { gte: new Date(startDate) }), ...(endDate && { lte: new Date(endDate) }) } },
-            { dueDate: null, competenceDate: { ...(startDate && { gte: new Date(startDate) }), ...(endDate && { lte: new Date(endDate) }) } },
+            { dueDate: { ...(startDate && { gte: new Date(startDate + "T00:00:00") }), ...(endDate && { lte: new Date(endDate + "T23:59:59") }) } },
+            { dueDate: null, competenceDate: { ...(startDate && { gte: new Date(startDate + "T00:00:00") }), ...(endDate && { lte: new Date(endDate + "T23:59:59") }) } },
           ]
         : null;
 
@@ -176,11 +177,13 @@ export async function POST(request: NextRequest) {
     const data = transactionSchema.parse(body);
 
     // Strip recurring helpers before saving
-    const { recurringMonths, dueDayOfMonth, ...txData } = data;
+    const { recurringMonths, dueDayOfMonth, openEnded, ...txData } = data;
 
     // ── RECURRING: generate N monthly transactions ──
-    if (data.isRecurring && recurringMonths && recurringMonths > 1) {
-      const months = Math.min(recurringMonths, 120); // cap at 10 years
+    if (data.isRecurring && (recurringMonths !== undefined || openEnded)) {
+      // openEnded=true OR recurringMonths=0 → generate 120 months (10 years), no fixed total
+      const isOpenEnded = openEnded === true || recurringMonths === 0;
+      const months = isOpenEnded ? 120 : Math.min(recurringMonths ?? 12, 120);
       const dayOfMonth = Math.min(Math.max(dueDayOfMonth ?? 5, 1), 28);
       const groupId = crypto.randomUUID();
       const baseDate = new Date(data.competenceDate);
@@ -198,16 +201,17 @@ export async function POST(request: NextRequest) {
           dueDate: due,
           paymentDate: null,
           isRecurring: true,
-          recurrenceRule: "MONTHLY",
+          recurrenceRule: isOpenEnded ? "MONTHLY_OPEN" : "MONTHLY",
           installmentGroupId: groupId,
           installmentNumber: i + 1,
-          installmentTotal: months,
+          // installmentTotal=null for open-ended → no fixed count shown in UI
+          installmentTotal: isOpenEnded ? null : months,
           paymentMethod: txData.paymentMethod as never ?? null,
         };
       });
 
       await prisma.transaction.createMany({ data: transactions });
-      return NextResponse.json({ created: months, groupId }, { status: 201 });
+      return NextResponse.json({ created: months, groupId, openEnded: isOpenEnded }, { status: 201 });
     }
 
     // ── SINGLE transaction ──
@@ -215,9 +219,10 @@ export async function POST(request: NextRequest) {
       data: {
         ...txData,
         companyId,
-        competenceDate: new Date(txData.competenceDate),
-        dueDate: txData.dueDate ? new Date(txData.dueDate) : null,
-        paymentDate: txData.paymentDate ? new Date(txData.paymentDate) : null,
+        // Store at local noon (T12:00:00) to avoid UTC midnight → wrong day in BR timezone
+        competenceDate: new Date(txData.competenceDate + "T12:00:00"),
+        dueDate: txData.dueDate ? new Date(txData.dueDate + "T12:00:00") : null,
+        paymentDate: txData.paymentDate ? new Date(txData.paymentDate + "T12:00:00") : null,
         paymentMethod: txData.paymentMethod as never ?? null,
       },
       include: { category: true, department: true, contact: true, account: true, creditCard: true },

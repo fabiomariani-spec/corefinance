@@ -42,7 +42,16 @@ export function formatDate(
   fmt = "dd/MM/yyyy"
 ): string {
   if (!date) return "—";
-  const d = typeof date === "string" ? parseISO(date) : date;
+  let d: Date;
+  if (typeof date === "string") {
+    // For date-only formats, normalize to local noon to prevent UTC→local day shift.
+    // new Date("2025-03-15") = UTC midnight → in UTC-3 = 2025-03-14T21:00 → shows 14/03 ❌
+    // Fix: use date portion + "T12:00:00" (noon) → correct day in any timezone ✔
+    const hasTime = fmt.includes("HH") || fmt.includes("mm") || fmt.includes("ss");
+    d = hasTime ? parseISO(date) : parseISO(date.substring(0, 10) + "T12:00:00");
+  } else {
+    d = date;
+  }
   if (!isValid(d)) return "—";
   return format(d, fmt, { locale: ptBR });
 }

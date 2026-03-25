@@ -21,6 +21,7 @@ interface CreditCard { id: string; name: string; }
 interface Transaction {
   id: string; description: string; amount: number;
   type: "INCOME" | "EXPENSE"; status: string; isPredicted: boolean;
+  isRecurring?: boolean;
   competenceDate: string; dueDate: string | null; paymentDate: string | null;
   notes?: string | null;
   category?: { id: string; name: string; color: string } | null;
@@ -54,6 +55,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
   const [step, setStep] = useState(0);
   const [form, setForm] = useState(EMPTY_FORM);
   const [recurringMonths, setRecurringMonths] = useState("12");
+  const [openEnded, setOpenEnded] = useState(false);
   const [dueDayOfMonth, setDueDayOfMonth] = useState("5");
   const [categories, setCategories] = useState<Category[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
@@ -61,6 +63,9 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
   const [creditCards, setCreditCards] = useState<CreditCard[]>([]);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  // Propagation dialog: shown when editing a recurring transaction and category/dept changed
+  const [showPropagateDialog, setShowPropagateDialog] = useState(false);
+  const [pendingPayload, setPendingPayload] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -119,10 +124,24 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
     setStep((s) => Math.max(s - 1, 0));
   }
 
+  async function doSave(payload: Record<string, unknown>) {
+    setLoading(true);
+    const url = isEditing ? `/api/transactions/${transaction!.id}` : "/api/transactions";
+    await fetch(url, {
+      method: isEditing ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    setLoading(false);
+    setShowPropagateDialog(false);
+    setPendingPayload(null);
+    onOpenChange(false);
+    onSuccess();
+  }
+
   async function handleSubmit() {
     if (!validateStep(step)) return;
-    setLoading(true);
-    const payload = {
+    const payload: Record<string, unknown> = {
       ...form,
       amount: form.amount,
       categoryId: form.categoryId || null,
@@ -134,22 +153,29 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
       paymentMethod: form.paymentMethod || null,
       notes: form.notes || null,
       ...(form.isRecurring && !isEditing && {
-        recurringMonths: parseInt(recurringMonths) || 12,
+        // openEnded = true → send 0 as signal for "no fixed end" (API generates 120 months)
+        recurringMonths: openEnded ? 0 : (parseInt(recurringMonths) || 12),
         dueDayOfMonth: parseInt(dueDayOfMonth) || 5,
+        openEnded,
       }),
     };
-    const url = isEditing ? `/api/transactions/${transaction!.id}` : "/api/transactions";
-    await fetch(url, {
-      method: isEditing ? "PUT" : "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    setLoading(false);
-    onOpenChange(false);
-    onSuccess();
+
+    // If editing a recurring transaction and category/dept changed, ask about propagation
+    if (isEditing && transaction?.isRecurring) {
+      const categoryChanged = (form.categoryId || null) !== (transaction?.category?.id ?? null);
+      const deptChanged = (form.departmentId || null) !== (transaction?.department?.id ?? null);
+      if (categoryChanged || deptChanged) {
+        setPendingPayload(payload);
+        setShowPropagateDialog(true);
+        return;
+      }
+    }
+
+    await doSave(payload);
   }
 
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
@@ -307,9 +333,26 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                         <p className="text-xs text-zinc-600">Ex: dia 5 de cada mês</p>
                       </div>
                       <div className="space-y-1.5">
-                        <Label className="text-xs">Repetir por quantos meses</Label>
-                        <Select value={recurringMonths} onValueChange={setRecurringMonths}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
+                        <div className="flex items-center justify-between">
+                          <Label className="text-xs">Repetir por quantos meses</Label>
+                          <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={openEnded}
+                              onChange={(e) => setOpenEnded(e.target.checked)}
+                              className="w-3.5 h-3.5 accent-indigo-500"
+                            />
+                            <span className="text-xs text-zinc-400">Sem prazo</span>
+                          </label>
+                        </div>
+                        <Select
+                          value={recurringMonths}
+                          onValueChange={setRecurringMonths}
+                          disabled={openEnded}
+                        >
+                          <SelectTrigger className={openEnded ? "opacity-40" : ""}>
+                            <SelectValue />
+                          </SelectTrigger>
                           <SelectContent>
                             <SelectItem value="3">3 meses</SelectItem>
                             <SelectItem value="6">6 meses</SelectItem>
@@ -320,7 +363,10 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                           </SelectContent>
                         </Select>
                         <p className="text-xs text-zinc-500">
-                          <strong className="text-indigo-400">{recurringMonths} lançamentos</strong> pendentes serão criados
+                          {openEnded
+                            ? <span className="text-violet-400 font-medium">Sem prazo definido — cancele manualmente quando quiser</span>
+                            : <><strong className="text-indigo-400">{recurringMonths} lançamentos</strong> pendentes serão criados</>
+                          }
                         </p>
                       </div>
                     </div>
@@ -411,5 +457,45 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    {/* ── Propagation Dialog ─────────────────────────────────────────────── */}
+    <Dialog open={showPropagateDialog} onOpenChange={setShowPropagateDialog}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2 text-base">
+            <RefreshCw className="w-4 h-4 text-indigo-400" />
+            Lançamento Recorrente
+          </DialogTitle>
+        </DialogHeader>
+        <div className="py-2 space-y-3">
+          <p className="text-sm text-zinc-300">
+            Você alterou a <strong className="text-white">categoria</strong> ou <strong className="text-white">departamento</strong> de um lançamento recorrente.
+          </p>
+          <p className="text-sm text-zinc-400">
+            Deseja aplicar essa mudança nos próximos lançamentos pendentes também?
+          </p>
+        </div>
+        <DialogFooter className="flex flex-col gap-2 sm:flex-col">
+          <Button
+            onClick={() => pendingPayload && doSave({ ...pendingPayload, propagateFuture: true })}
+            disabled={loading}
+            className="w-full"
+          >
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            Este e os próximos pendentes
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => pendingPayload && doSave(pendingPayload)}
+            disabled={loading}
+            className="w-full"
+          >
+            <Check className="w-4 h-4" />
+            Só este lançamento
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

@@ -49,9 +49,10 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     if (body.contactId !== undefined) data.contactId = body.contactId || null;
     if (body.accountId !== undefined) data.accountId = body.accountId || null;
     if (body.creditCardId !== undefined) data.creditCardId = body.creditCardId || null;
-    if (body.competenceDate !== undefined) data.competenceDate = new Date(body.competenceDate);
-    if (body.dueDate !== undefined) data.dueDate = body.dueDate ? new Date(body.dueDate) : null;
-    if (body.paymentDate !== undefined) data.paymentDate = body.paymentDate ? new Date(body.paymentDate) : null;
+    // Store at local noon (T12:00:00) to avoid UTC midnight → wrong day in BR timezone
+    if (body.competenceDate !== undefined) data.competenceDate = new Date(body.competenceDate + "T12:00:00");
+    if (body.dueDate !== undefined) data.dueDate = body.dueDate ? new Date(body.dueDate + "T12:00:00") : null;
+    if (body.paymentDate !== undefined) data.paymentDate = body.paymentDate ? new Date(body.paymentDate + "T12:00:00") : null;
     if (body.paymentMethod !== undefined) data.paymentMethod = body.paymentMethod || null;
     if (body.notes !== undefined) data.notes = body.notes || null;
     if (body.tags !== undefined) data.tags = body.tags;
@@ -60,6 +61,32 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       where: { id, companyId },
       data,
     });
+
+    // ── Propagate category/department to future transactions in the same group ──
+    // Triggered when body.propagateFuture === true and the transaction is recurring
+    if (body.propagateFuture && (body.categoryId !== undefined || body.departmentId !== undefined)) {
+      const current = await prisma.transaction.findFirst({
+        where: { id, companyId },
+        select: { installmentGroupId: true, installmentNumber: true },
+      });
+
+      if (current?.installmentGroupId) {
+        const propagateData: Record<string, unknown> = {};
+        if (body.categoryId !== undefined) propagateData.categoryId = body.categoryId || null;
+        if (body.departmentId !== undefined) propagateData.departmentId = body.departmentId || null;
+
+        await prisma.transaction.updateMany({
+          where: {
+            companyId,
+            installmentGroupId: current.installmentGroupId,
+            installmentNumber: { gt: current.installmentNumber ?? 0 },
+            // Only update PENDING/PREDICTED — don't touch already paid ones
+            status: { in: ["PENDING", "PREDICTED", "OVERDUE"] },
+          },
+          data: propagateData,
+        });
+      }
+    }
 
     return NextResponse.json({ updated: transaction.count });
   } catch (error) {
