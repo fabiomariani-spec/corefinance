@@ -11,6 +11,12 @@
     "db:generate": "prisma generate",
     "db:studio": "prisma studio"
   },
+  "browserslist": [
+    "Chrome >= 100",
+    "Edge >= 100",
+    "Firefox >= 100",
+    "Safari >= 15"
+  ],
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@hookform/resolvers": "^5.2.2",

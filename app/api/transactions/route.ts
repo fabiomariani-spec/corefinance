@@ -139,10 +139,9 @@ export const GET = withAuth(async ({ companyId, req }) => {
   const todayEnd = new Date();
   todayEnd.setHours(23, 59, 59, 999);
 
-  // ─── Todas as 9 queries em PARALELO via Promise.all ─────────────────────
-  // Antes eram sequenciais, somando ~600-1000ms de DB. Agora ~100-200ms (max
-  // da query mais lenta). pgbouncer transaction-mode na prod aguenta — pool
-  // tem max=1 mas pgbouncer faz multiplexing, então paralelizar é seguro.
+  // ─── 9 queries em PARALELO via Promise.all ──────────────────────────────
+  // Cada .aggregate é ~80-150ms incluindo roundtrip+parse. Em paralelo fica
+  // limitado pela mais lenta. Os índices novos cobrem todos os WHEREs.
   const [
     transactions,
     total,
@@ -170,33 +169,12 @@ export const GET = withAuth(async ({ companyId, req }) => {
       take: limit,
     }),
     prisma.transaction.count({ where }),
-    prisma.transaction.aggregate({
-      where: pendingWhere,
-      _sum: { amount: true },
-    }),
-    prisma.transaction.aggregate({
-      where: { ...baseWhere, type: "EXPENSE", status: "PAID" },
-      _sum: { amount: true },
-    }),
-    prisma.transaction.aggregate({
-      where: { ...baseWhere, type: "INCOME", status: "RECEIVED" },
-      _sum: { amount: true },
-      _count: true,
-    }),
-    prisma.transaction.aggregate({
-      where: { ...baseWhere, type: "INCOME", status: { in: ["PENDING", "OVERDUE"] } },
-      _sum: { amount: true },
-    }),
-    prisma.transaction.aggregate({
-      where: { companyId, type: "EXPENSE", status: "PAID", paymentDate: { gte: todayStart, lte: todayEnd } },
-      _sum: { amount: true },
-      _count: true,
-    }),
-    prisma.transaction.aggregate({
-      where: { companyId, type: "INCOME", status: "RECEIVED", paymentDate: { gte: todayStart, lte: todayEnd } },
-      _sum: { amount: true },
-      _count: true,
-    }),
+    prisma.transaction.aggregate({ where: pendingWhere, _sum: { amount: true } }),
+    prisma.transaction.aggregate({ where: { ...baseWhere, type: "EXPENSE", status: "PAID" }, _sum: { amount: true } }),
+    prisma.transaction.aggregate({ where: { ...baseWhere, type: "INCOME", status: "RECEIVED" }, _sum: { amount: true }, _count: true }),
+    prisma.transaction.aggregate({ where: { ...baseWhere, type: "INCOME", status: { in: ["PENDING", "OVERDUE"] } }, _sum: { amount: true } }),
+    prisma.transaction.aggregate({ where: { companyId, type: "EXPENSE", status: "PAID", paymentDate: { gte: todayStart, lte: todayEnd } }, _sum: { amount: true }, _count: true }),
+    prisma.transaction.aggregate({ where: { companyId, type: "INCOME", status: "RECEIVED", paymentDate: { gte: todayStart, lte: todayEnd } }, _sum: { amount: true }, _count: true }),
     prisma.transaction.groupBy({
       by: ["departmentId"],
       where: pendingWhere,
@@ -221,24 +199,34 @@ export const GET = withAuth(async ({ companyId, req }) => {
     amount: Number(r._sum.amount ?? 0),
   }));
 
-  return {
-    transactions,
-    total,
-    page,
-    totalPages: Math.ceil(total / limit),
-    summary: {
-      expensePending: Number(pendingAgg._sum.amount ?? 0),
-      expensePaid: Number(paidAgg._sum.amount ?? 0),
-      incomeReceived: Number(incomeReceivedAgg._sum.amount ?? 0),
-      incomeReceivedCount: incomeReceivedAgg._count,
-      incomePending: Number(incomePendingAgg._sum.amount ?? 0),
-      paidTodayExpense: Number(paidTodayExpenseAgg._sum.amount ?? 0),
-      paidTodayExpenseCount: paidTodayExpenseAgg._count,
-      paidTodayIncome: Number(paidTodayIncomeAgg._sum.amount ?? 0),
-      paidTodayIncomeCount: paidTodayIncomeAgg._count,
-      pendingByDepartment,
+  // Cache-Control: private (não compartilha entre usuários) + SWR de 30s.
+  // Browser serve do cache em navegações back/forward, e revalida em
+  // background. POST/DELETE invalidam via Cache: no-store no client.
+  return NextResponse.json(
+    {
+      transactions,
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+      summary: {
+        expensePending: Number(pendingAgg._sum.amount ?? 0),
+        expensePaid: Number(paidAgg._sum.amount ?? 0),
+        incomeReceived: Number(incomeReceivedAgg._sum.amount ?? 0),
+        incomeReceivedCount: incomeReceivedAgg._count,
+        incomePending: Number(incomePendingAgg._sum.amount ?? 0),
+        paidTodayExpense: Number(paidTodayExpenseAgg._sum.amount ?? 0),
+        paidTodayExpenseCount: paidTodayExpenseAgg._count,
+        paidTodayIncome: Number(paidTodayIncomeAgg._sum.amount ?? 0),
+        paidTodayIncomeCount: paidTodayIncomeAgg._count,
+        pendingByDepartment,
+      },
     },
-  };
+    {
+      headers: {
+        "Cache-Control": "private, max-age=10, stale-while-revalidate=60",
+      },
+    }
+  );
 }, { errorMsg: "Erro ao buscar lançamentos" });
 
 export const POST = withAuth(async ({ companyId, req }) => {

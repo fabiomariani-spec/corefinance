@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef, useTransition } from "react";
+import dynamic from "next/dynamic";
 import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,7 +13,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { TransactionModal } from "@/components/transactions/transaction-modal";
+// Lazy-load: modal pesado (dropzone, validação, currency input). Só carrega
+// quando o user clica em "Novo lançamento" ou edita uma linha. Reduz o
+// bundle inicial em ~40kb.
+const TransactionModal = dynamic(
+  () => import("@/components/transactions/transaction-modal").then(m => ({ default: m.TransactionModal })),
+  { ssr: false }
+);
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { formatCurrency, formatDate, formatStatus } from "@/lib/formatters";
 import { toDateStr } from "@/lib/dates";
