@@ -1,73 +1,48 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getCompanyId } from "@/lib/auth";
+import { withAuth } from "@/lib/api-handler";
 
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  try {
-    const companyId = await getCompanyId();
-    const { id } = await params;
-    const body = await request.json();
+export const PATCH = withAuth<{ id: string }>(async ({ companyId, params, req }) => {
+  const body = await req.json();
 
-    const dept = await prisma.department.findFirst({
-      where: { id, companyId },
-    });
+  const dept = await prisma.department.findFirst({
+    where: { id: params.id, companyId },
+  });
 
-    if (!dept) {
-      return NextResponse.json({ error: "Departamento não encontrado" }, { status: 404 });
-    }
-
-    const updateData: Record<string, unknown> = {};
-    if (typeof body.monthlyBudget === "number") {
-      updateData.monthlyBudget = Math.max(0, body.monthlyBudget);
-    }
-    if (typeof body.name === "string" && body.name.trim()) {
-      updateData.name = body.name.trim();
-    }
-    if (typeof body.color === "string") {
-      updateData.color = body.color;
-    }
-
-    const updated = await prisma.department.update({
-      where: { id },
-      data: updateData,
-    });
-
-    return NextResponse.json(updated);
-  } catch (error) {
-    console.error("Patch department error:", error);
-    return NextResponse.json({ error: "Erro ao atualizar departamento" }, { status: 500 });
+  if (!dept) {
+    return NextResponse.json({ error: "Departamento não encontrado" }, { status: 404 });
   }
-}
 
-export async function DELETE(
-  _request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  try {
-    const companyId = await getCompanyId();
-    const { id } = await params;
-
-    // Verify ownership
-    const dept = await prisma.department.findFirst({
-      where: { id, companyId },
-    });
-
-    if (!dept) {
-      return NextResponse.json({ error: "Departamento não encontrado" }, { status: 404 });
-    }
-
-    // Soft-delete
-    await prisma.department.update({
-      where: { id },
-      data: { isActive: false },
-    });
-
-    return NextResponse.json({ ok: true });
-  } catch (error) {
-    console.error("Delete department error:", error);
-    return NextResponse.json({ error: "Erro ao excluir departamento" }, { status: 500 });
+  const updateData: Record<string, unknown> = {};
+  if (typeof body.monthlyBudget === "number") {
+    updateData.monthlyBudget = Math.max(0, body.monthlyBudget);
   }
-}
+  if (typeof body.name === "string" && body.name.trim()) {
+    updateData.name = body.name.trim();
+  }
+  if (typeof body.color === "string") {
+    updateData.color = body.color;
+  }
+
+  return prisma.department.update({
+    where: { id: params.id },
+    data: updateData,
+  });
+}, { errorMsg: "Erro ao atualizar departamento" });
+
+export const DELETE = withAuth<{ id: string }>(async ({ companyId, params }) => {
+  const dept = await prisma.department.findFirst({
+    where: { id: params.id, companyId },
+  });
+
+  if (!dept) {
+    return NextResponse.json({ error: "Departamento não encontrado" }, { status: 404 });
+  }
+
+  await prisma.department.update({
+    where: { id: params.id },
+    data: { isActive: false },
+  });
+
+  return { ok: true };
+}, { errorMsg: "Erro ao excluir departamento" });

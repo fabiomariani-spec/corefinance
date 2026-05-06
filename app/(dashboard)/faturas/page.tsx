@@ -1,9 +1,8 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -16,7 +15,6 @@ import {
   Upload,
   FileText,
   CheckCircle,
-  XCircle,
   Loader2,
   Sparkles,
   AlertCircle,
@@ -25,7 +23,10 @@ import {
   ChevronDown,
   Check,
   BarChart2,
+  Plus,
 } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
+import { useRouter } from "next/navigation";
 
 interface CreditCardData { id: string; name: string; brand: string; }
 interface ExtractedItem {
@@ -53,7 +54,9 @@ interface ExtractionResult {
 type Step = "upload" | "processing" | "review" | "done";
 
 export default function FaturasPage() {
+  const router = useRouter();
   const [cards, setCards] = useState<CreditCardData[]>([]);
+  const [cardsLoaded, setCardsLoaded] = useState(false);
   const [selectedCard, setSelectedCard] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [step, setStep] = useState<Step>("upload");
@@ -64,11 +67,43 @@ export default function FaturasPage() {
   const [confirmed, setConfirmed] = useState<{ invoiceId: string; created: number; skipped: number } | null>(null);
   const [showAnalysis, setShowAnalysis] = useState(true);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+  const [autoCountdown, setAutoCountdown] = useState(false);
+  const autoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  useState(() => {
-    fetch("/api/credit-cards").then((r) => r.json()).then((data) => setCards(data));
-  });
+  useEffect(() => {
+    fetch("/api/credit-cards").then((r) => r.json()).then((data) => {
+      setCards(Array.isArray(data) ? data : []);
+      setCardsLoaded(true);
+      // Auto pre-select if user has only 1 card
+      if (Array.isArray(data) && data.length === 1) {
+        setSelectedCard(data[0].id);
+      }
+    }).catch(() => setCardsLoaded(true));
+  }, []);
+
+  // Auto-process: when file is set AND card is selected, kick off after 1s
+  useEffect(() => {
+    if (file && selectedCard && step === "upload") {
+      setAutoCountdown(true);
+      autoTimerRef.current = setTimeout(() => {
+        setAutoCountdown(false);
+        handleProcess();
+      }, 1000);
+      return () => {
+        if (autoTimerRef.current) clearTimeout(autoTimerRef.current);
+      };
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file, selectedCard, step]);
+
+  function cancelAutoProcess() {
+    if (autoTimerRef.current) {
+      clearTimeout(autoTimerRef.current);
+      autoTimerRef.current = null;
+    }
+    setAutoCountdown(false);
+  }
 
   function handleFileDrop(e: React.DragEvent) {
     e.preventDefault();
@@ -91,12 +126,21 @@ export default function FaturasPage() {
         body: formData,
       });
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Erro ao processar fatura");
+      // Keep-alive streaming: the body may start with whitespace (to prevent
+      // CDN inactivity timeout) then contains the JSON payload. JSON.parse
+      // tolerates leading whitespace, so plain res.json() works.
+      const text = await res.text();
+      let data: ExtractionResult & { error?: string };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        if (res.status === 413) throw new Error("Arquivo muito grande pro servidor (limite ~4,5MB no deploy). Tente um PDF/imagem menor.");
+        if (res.status === 504 || res.status === 502) throw new Error("O processamento demorou demais e o servidor cortou. Tente uma imagem JPG/PNG no lugar do PDF, ou um arquivo menor.");
+        throw new Error(`Erro ${res.status}: o servidor não retornou JSON. Verifique os logs do deploy.`);
       }
 
-      const data: ExtractionResult = await res.json();
+      if (data.error) throw new Error(data.error);
+
       setResult(data);
       setItems(data.items.map((item) => ({ ...item, include: true })));
       setStep("review");
@@ -217,7 +261,22 @@ export default function FaturasPage() {
         </div>
 
         {/* Step: Upload */}
-        {step === "upload" && (
+        {step === "upload" && cardsLoaded && cards.length === 0 && (
+          <EmptyState
+            icon={CreditCard}
+            title="Cadastre um cartão antes de importar"
+            description="A leitura automática de fatura precisa de pelo menos 1 cartão cadastrado pra associar os lançamentos. Leva 30 segundos."
+            actionLabel={
+              <>
+                <Plus className="w-4 h-4" /> Cadastrar Cartão
+              </>
+            }
+            onAction={() => router.push("/cartoes")}
+          />
+        )}
+
+        {/* Step: Upload */}
+        {step === "upload" && (!cardsLoaded || cards.length > 0) && (
           <div className="max-w-xl mx-auto space-y-5">
             {error && (
               <div className="flex items-center gap-2 p-4 rounded-lg bg-red-950/50 border border-red-900 text-red-400 text-sm">
@@ -226,25 +285,27 @@ export default function FaturasPage() {
               </div>
             )}
 
-            {/* Select Card */}
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-3">
-              <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-                <CreditCard className="w-4 h-4 text-indigo-400" />
-                Selecione o Cartão
-              </h3>
-              <Select value={selectedCard} onValueChange={setSelectedCard}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Escolha o cartão da fatura..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {cards.map((card) => (
-                    <SelectItem key={card.id} value={card.id}>
-                      {card.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+            {/* Select Card — hidden when user has exactly 1 card (auto pre-selected) */}
+            {cards.length !== 1 && (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-3">
+                <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+                  <CreditCard className="w-4 h-4 text-indigo-400" />
+                  Selecione o Cartão
+                </h3>
+                <Select value={selectedCard} onValueChange={setSelectedCard}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Escolha o cartão da fatura..." />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {cards.map((card) => (
+                      <SelectItem key={card.id} value={card.id}>
+                        {card.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
             {/* File Drop */}
             <div
@@ -286,15 +347,34 @@ export default function FaturasPage() {
               )}
             </div>
 
-            <Button
-              className="w-full"
-              onClick={handleProcess}
-              disabled={!file || !selectedCard}
-              size="lg"
-            >
-              <Sparkles className="w-4 h-4" />
-              Processar com IA
-            </Button>
+            {/* Auto-process countdown banner */}
+            {autoCountdown && (
+              <div className="flex items-center justify-between gap-3 p-3 rounded-lg bg-indigo-950/40 border border-indigo-900/50 text-sm text-indigo-300">
+                <div className="flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin text-indigo-400" />
+                  <span>Processando automaticamente em 1s...</span>
+                </div>
+                <button
+                  onClick={cancelAutoProcess}
+                  className="text-xs font-semibold text-indigo-200 hover:text-white px-2 py-1 rounded border border-indigo-800 hover:bg-indigo-900/40 transition-colors"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+
+            {/* Manual fallback — hidden during auto-process */}
+            {!autoCountdown && (
+              <Button
+                className="w-full"
+                onClick={handleProcess}
+                disabled={!file || !selectedCard}
+                size="lg"
+              >
+                <Sparkles className="w-4 h-4" />
+                Processar com IA
+              </Button>
+            )}
           </div>
         )}
 

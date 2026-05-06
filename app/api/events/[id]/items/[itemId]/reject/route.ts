@@ -1,26 +1,23 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getCompanyId } from "@/lib/auth";
+import { withAuth } from "@/lib/api-handler";
 
-export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string; itemId: string }> }) {
-  try {
-    const companyId = await getCompanyId();
-    const { id: eventId, itemId } = await params;
-    const body = await request.json();
+type Params = { id: string; itemId: string };
 
-    const item = await prisma.eventItem.findFirst({ where: { id: itemId, companyId, eventId } });
-    if (!item) return NextResponse.json({ error: "Lançamento não encontrado" }, { status: 404 });
+export const POST = withAuth<Params>(async ({ companyId, params, req }) => {
+  const { id: eventId, itemId } = params;
+  const body = await req.json();
 
-    await prisma.eventItem.update({
-      where: { id: itemId },
-      data: {
-        status: "REJECTED",
-        rejectionReason: body.reason || null,
-      },
-    });
+  const item = await prisma.eventItem.findFirst({ where: { id: itemId, companyId, eventId } });
+  if (!item) return NextResponse.json({ error: "Lançamento não encontrado" }, { status: 404 });
 
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    return NextResponse.json({ error: "Erro ao recusar lançamento" }, { status: 500 });
-  }
-}
+  await prisma.eventItem.update({
+    where: { id: itemId },
+    data: {
+      status: "REJECTED",
+      rejectionReason: body.reason || null,
+    },
+  });
+
+  return { success: true };
+}, { errorMsg: "Erro ao recusar lançamento" });

@@ -1,46 +1,43 @@
-import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getCompanyId } from "@/lib/auth";
+import { withAuth } from "@/lib/api-handler";
 
-export async function PUT(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const companyId = await getCompanyId();
-    const { id } = await params;
-    const body = await request.json();
+export const PUT = withAuth<{ id: string }>(async ({ companyId, params, req }) => {
+  const body = await req.json();
+  await prisma.creditCard.updateMany({
+    where: { id: params.id, companyId },
+    data: {
+      name: body.name,
+      bank: body.bank,
+      brand: body.brand,
+      lastFour: body.lastFour,
+      limit: body.limit,
+      closingDay: body.closingDay,
+      dueDay: body.dueDay,
+      holder: body.holder,
+      color: body.color,
+    },
+  });
+  return { success: true };
+});
 
-    await prisma.creditCard.updateMany({
-      where: { id, companyId },
-      data: {
-        name: body.name,
-        bank: body.bank,
-        brand: body.brand,
-        lastFour: body.lastFour,
-        limit: body.limit,
-        closingDay: body.closingDay,
-        dueDay: body.dueDay,
-        holder: body.holder,
-        color: body.color,
-      },
-    });
-
-    return NextResponse.json({ success: true });
-  } catch {
-    return NextResponse.json({ error: "Erro" }, { status: 500 });
+export const PATCH = withAuth<{ id: string }>(async ({ companyId, params, req }) => {
+  const body = await req.json();
+  // Whitelist de campos permitidos para edição parcial
+  const allowed: Record<string, unknown> = {};
+  for (const k of ["name", "bank", "brand", "lastFour", "limit", "closingDay", "dueDay", "holder", "color"]) {
+    if (k in body) allowed[k] = body[k];
   }
-}
+  await prisma.creditCard.updateMany({
+    where: { id: params.id, companyId },
+    data: allowed,
+  });
+  return { success: true };
+});
 
-export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  try {
-    const companyId = await getCompanyId();
-    const { id } = await params;
-
-    await prisma.creditCard.updateMany({
-      where: { id, companyId },
-      data: { isActive: false },
-    });
-
-    return NextResponse.json({ success: true });
-  } catch {
-    return NextResponse.json({ error: "Erro" }, { status: 500 });
-  }
-}
+export const DELETE = withAuth<{ id: string }>(async ({ companyId, params }) => {
+  await prisma.creditCard.updateMany({
+    where: { id: params.id, companyId },
+    data: { isActive: false },
+  });
+  return { success: true };
+});

@@ -12,13 +12,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
   Users,
   Plus,
@@ -33,9 +27,12 @@ import {
   Clock,
   UserCheck,
   RefreshCw,
+  UserPlus,
 } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
 import { format, parseISO, formatDistanceToNow } from "date-fns";
 import { ptBR } from "date-fns/locale";
+import { toast } from "@/lib/toast";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -122,6 +119,15 @@ export default function EquipePage() {
   const [removeTarget, setRemoveTarget] = useState<Member | null>(null);
   const [removing, setRemoving] = useState(false);
 
+  // Toast — usa o sistema global em lib/toast (montado em layout raiz).
+  const showToast = useCallback((msg: string, kind: "success" | "error" = "success") => {
+    if (kind === "error") toast.error(msg);
+    else toast.success(msg);
+  }, []);
+
+  // Resend invite state
+  const [resendingId, setResendingId] = useState<string | null>(null);
+
   const fetchTeam = useCallback(async () => {
     setLoading(true);
     try {
@@ -175,6 +181,86 @@ export default function EquipePage() {
       body: JSON.stringify({ token }),
     });
     fetchTeam();
+  }
+
+  async function handleResendInvite(invite: Invite) {
+    setResendingId(invite.id);
+    try {
+      const res = await fetch("/api/team/invite/resend", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inviteId: invite.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        showToast(data.error ?? "Erro ao reenviar convite", "error");
+        return;
+      }
+      const link = `${window.location.origin}/convite/${data.token}`;
+      try {
+        await navigator.clipboard.writeText(link);
+      } catch {
+        // ignore clipboard failures (insecure context, etc.)
+      }
+      showToast("Convite reenviado, link copiado");
+      fetchTeam();
+    } finally {
+      setResendingId(null);
+    }
+  }
+
+  async function handleChangeRole(member: Member, newRole: string) {
+    if (member.role === newRole) return;
+    const previousRole = member.role;
+
+    // Optimistic update
+    setTeamData((prev) =>
+      prev
+        ? {
+            ...prev,
+            members: prev.members.map((m) =>
+              m.id === member.id ? { ...m, role: newRole } : m
+            ),
+          }
+        : prev
+    );
+
+    try {
+      const res = await fetch(`/api/team/${member.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: newRole }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        // Revert
+        setTeamData((prev) =>
+          prev
+            ? {
+                ...prev,
+                members: prev.members.map((m) =>
+                  m.id === member.id ? { ...m, role: previousRole } : m
+                ),
+              }
+            : prev
+        );
+        showToast(data.error ?? "Erro ao alterar permissão", "error");
+        return;
+      }
+      showToast("Permissão atualizada");
+    } catch {
+      setTeamData((prev) =>
+        prev
+          ? {
+              ...prev,
+              members: prev.members.map((m) =>
+                m.id === member.id ? { ...m, role: previousRole } : m
+              ),
+            }
+          : prev
+      );
+      showToast("Erro ao alterar permissão", "error");
+    }
   }
 
   // ── Remove member ─────────────────────────────────────────────────────────
@@ -323,6 +409,27 @@ export default function EquipePage() {
           </div>
         )}
 
+        {/* ── Solo-user CTA: only current user, no invites pending ───────── */}
+        {!loading &&
+         teamData &&
+         teamData.members.length === 1 &&
+         teamData.members[0].isCurrentUser &&
+         teamData.invites.length === 0 &&
+         !inviteOpen &&
+         isAdmin && (
+          <EmptyState
+            icon={UserPlus}
+            title="Convide colegas pra colaborar"
+            description="Você está sozinho aqui. Convide o financeiro, contador ou outros sócios pra dividir o trabalho — cada um com permissões específicas."
+            actionLabel={
+              <>
+                <Plus className="w-4 h-4" /> Convidar Membro
+              </>
+            }
+            onAction={() => { setInviteOpen(true); setGeneratedLink(null); setInviteError(null); }}
+          />
+        )}
+
         {/* ── Members list ──────────────────────────────────────────────── */}
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-zinc-800 flex items-center gap-2">
@@ -340,10 +447,19 @@ export default function EquipePage() {
               {[1, 2].map((i) => <div key={i} className="h-14 skeleton rounded-lg" />)}
             </div>
           ) : teamData?.members.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-zinc-600">
-              <Users className="w-10 h-10 mb-2 opacity-20" />
-              <p className="text-sm">Nenhum membro ativo</p>
-            </div>
+            <EmptyState
+              size="md"
+              icon={Users}
+              title="Nenhum membro ativo"
+              description="Algo estranho aconteceu — você deveria estar listado aqui. Tente atualizar."
+              actionLabel={
+                <>
+                  <RefreshCw className="w-4 h-4" /> Atualizar
+                </>
+              }
+              onAction={fetchTeam}
+              actionVariant="outline"
+            />
           ) : (
             <div className="divide-y divide-zinc-800/60">
               {teamData!.members.map((member) => (
@@ -362,14 +478,39 @@ export default function EquipePage() {
                     <p className="text-xs text-zinc-500 truncate">{member.email}</p>
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
-                    <RoleBadge role={member.role} />
+                    {isAdmin && member.role !== "EVENTS_ONLY" ? (
+                      <Select
+                        value={member.role}
+                        onValueChange={(v) => handleChangeRole(member, v)}
+                      >
+                        <SelectTrigger
+                          className="h-7 px-2 py-0 text-xs w-auto min-w-[8.5rem] bg-zinc-800/60 border-zinc-700 hover:border-indigo-600/50 focus:ring-indigo-600/40"
+                          title="Alterar permissão"
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ADMIN">
+                            <span className="flex items-center gap-2">
+                              <Crown className="w-3 h-3 text-indigo-400" />
+                              Administrador
+                            </span>
+                          </SelectItem>
+                          <SelectItem value="MANAGER">Gerente</SelectItem>
+                          <SelectItem value="ACCOUNTANT">Financeiro</SelectItem>
+                          <SelectItem value="VIEWER">Visualizador</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <RoleBadge role={member.role} />
+                    )}
                     <span className="text-xs text-zinc-600 hidden sm:block">
                       desde {format(parseISO(member.createdAt), "dd/MM/yy", { locale: ptBR })}
                     </span>
                     {isAdmin && !member.isCurrentUser && member.role !== "ADMIN" && (
                       <button
                         onClick={() => setRemoveTarget(member)}
-                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded hover:bg-red-500/10 text-zinc-500 hover:text-red-400"
+                        className="p-1.5 rounded hover:bg-red-500/10 text-zinc-500 hover:text-red-400 transition-colors"
                         title="Remover membro"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -423,6 +564,18 @@ export default function EquipePage() {
                             <Copy className="w-3.5 h-3.5" />
                           </button>
                           <button
+                            onClick={() => handleResendInvite(invite)}
+                            disabled={resendingId === invite.id}
+                            className="p-1.5 rounded hover:bg-indigo-500/10 text-zinc-500 hover:text-indigo-300 transition-colors disabled:opacity-50"
+                            title="Reenviar convite (gera novo link)"
+                          >
+                            {resendingId === invite.id ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <RefreshCw className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                          <button
                             onClick={() => handleRevokeInvite(invite.token)}
                             className="p-1.5 rounded hover:bg-red-500/10 text-zinc-500 hover:text-red-400 transition-colors"
                             title="Revogar convite"
@@ -461,41 +614,28 @@ export default function EquipePage() {
       </div>
 
       {/* ── Remove confirm dialog ──────────────────────────────────────── */}
-      <Dialog open={!!removeTarget} onOpenChange={(open) => { if (!open) setRemoveTarget(null); }}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-red-400">
-              <AlertTriangle className="w-5 h-5" />
-              Remover membro
-            </DialogTitle>
-          </DialogHeader>
-          <div className="py-2 space-y-2">
-            <p className="text-sm text-zinc-300">
+      <ConfirmDialog
+        open={!!removeTarget}
+        onClose={() => setRemoveTarget(null)}
+        onConfirm={handleConfirmRemove}
+        title="Remover membro"
+        confirmLabel="Remover"
+        loadingLabel="Removendo..."
+        loading={removing}
+        message={
+          <>
+            <p>
               Tem certeza que deseja remover{" "}
               <span className="font-semibold text-white">{removeTarget?.name}</span>{" "}
               da equipe?
             </p>
-            <p className="text-xs text-zinc-500">
+            <p className="text-xs text-zinc-500 mt-2">
               O acesso será revogado imediatamente. Você poderá convidá-lo novamente se necessário.
             </p>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRemoveTarget(null)} disabled={removing}>
-              Cancelar
-            </Button>
-            <Button
-              className="bg-red-600 hover:bg-red-700 text-white"
-              onClick={handleConfirmRemove}
-              disabled={removing}
-            >
-              {removing
-                ? <><Loader2 className="w-4 h-4 animate-spin" /> Removendo...</>
-                : <><Trash2 className="w-4 h-4" /> Remover</>
-              }
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </>
+        }
+      />
+
     </>
   );
 }

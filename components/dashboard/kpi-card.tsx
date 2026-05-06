@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import { TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 
 interface KpiCardProps {
   title: string;
@@ -13,6 +14,8 @@ interface KpiCardProps {
   icon?: React.ReactNode;
   color?: "indigo" | "emerald" | "red" | "amber" | "violet";
   size?: "default" | "large";
+  /** Texto do tooltip explicativo do termo (ex: "Burn rate" → "Velocidade que..."). */
+  tooltip?: string;
 }
 
 const colorMap = {
@@ -51,6 +54,7 @@ export function KpiCard({
   icon,
   color = "indigo",
   size = "default",
+  tooltip,
 }: KpiCardProps) {
   const colors = colorMap[color];
 
@@ -62,7 +66,10 @@ export function KpiCard({
       )}
     >
       <div className="flex items-start justify-between">
-        <p className="text-sm font-medium text-zinc-400">{title}</p>
+        <p className="text-sm font-medium text-zinc-400 flex items-center gap-1.5">
+          {title}
+          {tooltip && <InfoTooltip text={tooltip} />}
+        </p>
         {icon && (
           <div className={cn("w-8 h-8 rounded-lg flex items-center justify-center", colors.icon)}>
             {icon}

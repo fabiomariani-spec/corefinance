@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireAuth } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
 
 const ROLE_LABELS: Record<string, string> = {

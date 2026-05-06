@@ -1,17 +1,15 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getCompanyId } from "@/lib/auth";
+import { withAuth } from "@/lib/api-handler";
 import { startOfMonth, endOfMonth, startOfWeek, endOfWeek, format } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
-export async function GET(request: NextRequest) {
-  try {
-    const companyId = await getCompanyId();
-    const { searchParams } = new URL(request.url);
+export const GET = withAuth(async ({ companyId, req }) => {
+  const { searchParams } = req.nextUrl;
 
-    const type = searchParams.get("type") ?? "dre";
-    const startDate = searchParams.get("startDate");
-    const endDate = searchParams.get("endDate");
+  const type = searchParams.get("type") ?? "dre";
+  const startDate = searchParams.get("startDate");
+  const endDate = searchParams.get("endDate");
 
     // Fix timezone: append T12:00:00 to avoid UTC midnight shifting to previous day in BR
     const start = startDate ? new Date(startDate + "T00:00:00") : startOfMonth(new Date());
@@ -381,12 +379,8 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Default: raw transactions
-    return NextResponse.json({
-      transactions: transactions.map((t) => ({ ...t, amount: Number(t.amount) })),
-    });
-  } catch (error) {
-    console.error("Reports error:", error);
-    return NextResponse.json({ error: "Erro ao gerar relatório" }, { status: 500 });
-  }
-}
+  // Default: raw transactions
+  return {
+    transactions: transactions.map((t) => ({ ...t, amount: Number(t.amount) })),
+  };
+}, { errorMsg: "Erro ao gerar relatório" });

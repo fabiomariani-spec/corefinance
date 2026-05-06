@@ -1,6 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getCompanyId } from "@/lib/auth";
+import { withAuth } from "@/lib/api-handler";
 import {
   startOfMonth,
   endOfMonth,
@@ -44,13 +43,11 @@ function getRange(period: Period, refDate: Date) {
   };
 }
 
-export async function GET(request: NextRequest) {
-  try {
-    const companyId = await getCompanyId();
-    const { searchParams } = new URL(request.url);
+export const GET = withAuth(async ({ companyId, req }) => {
+  const { searchParams } = req.nextUrl;
 
-    const refDate = searchParams.get("date") ? new Date(searchParams.get("date")!) : new Date();
-    const period = (searchParams.get("period") ?? "month") as Period;
+  const refDate = searchParams.get("date") ? new Date(searchParams.get("date")!) : new Date();
+  const period = (searchParams.get("period") ?? "month") as Period;
 
     const { start, end, prevStart, prevEnd } = getRange(period, refDate);
 
@@ -386,58 +383,54 @@ export async function GET(request: NextRequest) {
     const projectedExpenses = currentExpenses + currentExpensesPredicted;
     const projectedProfit = projectedIncome - projectedExpenses;
 
-    return NextResponse.json({
-      currentMonth: {
-        income: currentIncome,
-        expenses: currentExpenses,
-        netProfit,
-        netMargin,
-        incomePredicted: currentIncomePredicted,
-        expensesPredicted: currentExpensesPredicted,
-      },
-      previousMonth: {
-        income: previousIncome,
-        expenses: previousExpenses,
-        netProfit: previousIncome - previousExpenses,
-      },
-      projection: {
-        income: projectedIncome,
-        expenses: projectedExpenses,
-        profit: projectedProfit,
-        margin: projectedIncome > 0 ? (projectedProfit / projectedIncome) * 100 : 0,
-      },
-      totalCashBalance,
-      burnRate,
-      avgBurnRate3m,
-      runway,
-      headcount,
-      revenuePerEmployee,
-      prevRevenuePerEmployee,
-      byDepartment,
-      byIncomeCategory,
-      byCategory,
-      churn: {
-        customerChurnRate,
-        revenueChurnRate,
-        churnedClients: churnedClientIds.length,
-        prevClientCount: prevClientIds.size,
-      },
-      monthlyTrend,
-      churnTrend12m,
-      topExpenses,
-      upcomingPayables: upcomingPayables.map((t) => ({
-        id: t.id,
-        description: t.description,
-        amount: Number(t.amount),
-        dueDate: t.dueDate,
-        category: t.category?.name,
-        categoryColor: t.category?.color,
-      })),
-      totalPayables,
-      creditCardCommitted,
-    });
-  } catch (error) {
-    console.error("Dashboard error:", error);
-    return NextResponse.json({ error: "Erro ao carregar dashboard", detail: String(error) }, { status: 500 });
-  }
-}
+  return {
+    currentMonth: {
+      income: currentIncome,
+      expenses: currentExpenses,
+      netProfit,
+      netMargin,
+      incomePredicted: currentIncomePredicted,
+      expensesPredicted: currentExpensesPredicted,
+    },
+    previousMonth: {
+      income: previousIncome,
+      expenses: previousExpenses,
+      netProfit: previousIncome - previousExpenses,
+    },
+    projection: {
+      income: projectedIncome,
+      expenses: projectedExpenses,
+      profit: projectedProfit,
+      margin: projectedIncome > 0 ? (projectedProfit / projectedIncome) * 100 : 0,
+    },
+    totalCashBalance,
+    burnRate,
+    avgBurnRate3m,
+    runway,
+    headcount,
+    revenuePerEmployee,
+    prevRevenuePerEmployee,
+    byDepartment,
+    byIncomeCategory,
+    byCategory,
+    churn: {
+      customerChurnRate,
+      revenueChurnRate,
+      churnedClients: churnedClientIds.length,
+      prevClientCount: prevClientIds.size,
+    },
+    monthlyTrend,
+    churnTrend12m,
+    topExpenses,
+    upcomingPayables: upcomingPayables.map((t) => ({
+      id: t.id,
+      description: t.description,
+      amount: Number(t.amount),
+      dueDate: t.dueDate,
+      category: t.category?.name,
+      categoryColor: t.category?.color,
+    })),
+    totalPayables,
+    creditCardCommitted,
+  };
+}, { errorMsg: "Erro ao carregar dashboard" });

@@ -3,12 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import type { UserRole } from "@prisma/client";
 import {
   LayoutDashboard,
   ArrowLeftRight,
   CreditCard,
   Building2,
-  FileText,
   BarChart3,
   TrendingUp,
   Settings,
@@ -23,6 +23,7 @@ import {
   CalendarDays,
 } from "lucide-react";
 import { useState, useEffect } from "react";
+import { useNavigationProgress } from "@/components/layout/navigation-progress";
 
 const groups = [
   {
@@ -60,12 +61,33 @@ const bottomItems = [
   { label: "Configurações", href: "/configuracoes", icon: Settings },
 ];
 
-export function Sidebar() {
+// Caminhos permitidos por role. Roles ausentes daqui veem tudo (admin/manager
+// /accountant/viewer). EVENTS_ONLY só pode acessar /eventos.
+const ALLOWED_PATHS: Partial<Record<UserRole, Set<string>>> = {
+  EVENTS_ONLY: new Set(["/eventos"]),
+};
+
+function filterGroupsByRole(role: UserRole) {
+  const allowed = ALLOWED_PATHS[role];
+  if (!allowed) return groups;
+  return groups
+    .map((g) => ({ ...g, items: g.items.filter((it) => allowed.has(it.href)) }))
+    .filter((g) => g.items.length > 0);
+}
+
+export function Sidebar({ role = "ADMIN" }: { role?: UserRole }) {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+  const { start: startNavProgress } = useNavigationProgress();
+
+  const handleNavClick = (href: string) => {
+    if (href !== pathname) startNavProgress();
+  };
+
+  const visibleGroups = filterGroupsByRole(role);
 
   // Determine which group contains the active route
-  const activeGroupIndex = groups.findIndex((g) =>
+  const activeGroupIndex = visibleGroups.findIndex((g) =>
     g.items.some(
       (item) =>
         pathname === item.href ||
@@ -74,12 +96,13 @@ export function Sidebar() {
   );
 
   const [openGroups, setOpenGroups] = useState<boolean[]>(() =>
-    groups.map((_, i) => i === (activeGroupIndex >= 0 ? activeGroupIndex : 0))
+    visibleGroups.map((_, i) => i === (activeGroupIndex >= 0 ? activeGroupIndex : 0))
   );
 
   // When route changes, open the group that contains it
   useEffect(() => {
     if (activeGroupIndex >= 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- sync UI with route
       setOpenGroups((prev) =>
         prev.map((v, i) => (i === activeGroupIndex ? true : v))
       );
@@ -116,7 +139,7 @@ export function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 px-2 py-4 space-y-1 overflow-y-auto">
-        {groups.map((group, gi) => {
+        {visibleGroups.map((group, gi) => {
           const GroupIcon = group.icon;
           const isGroupActive = group.items.some(
             (item) =>
@@ -165,6 +188,7 @@ export function Sidebar() {
                       <Link
                         key={item.href}
                         href={item.href}
+                        onClick={() => handleNavClick(item.href)}
                         className={cn(
                           "flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-all duration-150",
                           isActive
@@ -193,6 +217,7 @@ export function Sidebar() {
                         key={item.href}
                         href={item.href}
                         title={item.label}
+                        onClick={() => handleNavClick(item.href)}
                         className={cn(
                           "flex justify-center px-3 py-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] items-center",
                           isActive
@@ -221,6 +246,7 @@ export function Sidebar() {
               key={item.href}
               href={item.href}
               title={collapsed ? item.label : undefined}
+              onClick={() => handleNavClick(item.href)}
               className={cn(
                 "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all",
                 isActive

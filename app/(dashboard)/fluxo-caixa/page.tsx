@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Header } from "@/components/layout/header";
 import { formatCurrency, formatDate } from "@/lib/formatters";
 import {
@@ -35,11 +35,18 @@ import {
   RefreshCw,
   CalendarDays,
   ChevronDown,
+  ChevronUp,
   Wallet,
   Clock,
   Building2,
   BarChart3,
+  Loader2,
 } from "lucide-react";
+import { DateRangePicker } from "@/components/ui/date-range-picker";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
+import { downloadSpreadsheet } from "@/lib/export";
+import { Download } from "lucide-react";
+import { useAutoRefresh } from "@/lib/use-auto-refresh";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -55,6 +62,7 @@ interface Transaction {
   installmentTotal?: number | null;
   competenceDate: string;
   dueDate: string | null;
+  paymentDate: string | null;
   category?: { name: string; color: string } | null;
   contact?: { name: string } | null;
 }
@@ -463,19 +471,65 @@ function RunwayBadge({ days }: { days: number }) {
 export default function FluxoCaixaPage() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [data, setData] = useState<CashFlowData | null>(null);
+  // `loading` apenas na primeira carga; `refetching` mantém dados visíveis
+  // ao trocar mês/range/marcar pago — só mostra spinner discreto no header.
   const [loading, setLoading] = useState(true);
+  const [refetching, setRefetching] = useState(false);
+  const hasFetchedRef = useRef(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  // Filtro por range custom. Quando vazio, cai no `month` do header (mês atual).
+  const [dateFrom, setDateFrom] = useState<string>("");
+  const [dateTo, setDateTo] = useState<string>("");
+
+  // Sort do extrato
+  type SortKey =
+    | "date"
+    | "payment"
+    | "description"
+    | "category"
+    | "status"
+    | "income"
+    | "expense"
+    | "balance";
+  const [sortBy, setSortBy] = useState<SortKey>("date");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+
+  function toggleSort(key: SortKey) {
+    if (sortBy === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(key);
+      setSortDir("asc");
+    }
+  }
+
+  const hasCustomRange = Boolean(dateFrom && dateTo);
 
   const fetchData = useCallback(() => {
-    const month = format(currentDate, "yyyy-MM");
-    setLoading(true);
-    fetch(`/api/cash-flow?month=${month}`)
+    if (!hasFetchedRef.current) setLoading(true);
+    else setRefetching(true);
+    const params =
+      dateFrom && dateTo
+        ? `startDate=${dateFrom}&endDate=${dateTo}`
+        : `month=${format(currentDate, "yyyy-MM")}`;
+    fetch(`/api/cash-flow?${params}`)
       .then((r) => r.json())
       .then(setData)
-      .finally(() => setLoading(false));
-  }, [currentDate]);
+      .finally(() => {
+        setLoading(false);
+        setRefetching(false);
+        hasFetchedRef.current = true;
+        markRefreshedRef.current?.();
+      });
+  }, [currentDate, dateFrom, dateTo]);
+
+  // ── Auto-refresh (5min + on tab focus) ────────────────────────────────────
+  const markRefreshedRef = useRef<(() => void) | null>(null);
+  const { label: refreshLabel, markRefreshed } = useAutoRefresh(fetchData);
+  markRefreshedRef.current = markRefreshed;
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount/on-month-change
     fetchData();
   }, [fetchData]);
 
@@ -519,12 +573,57 @@ export default function FluxoCaixaPage() {
       <Header
         title="Fluxo de Caixa"
         subtitle="Liquidez, projeção e gestão de recebíveis"
-        showDateNav
+        showDateNav={!hasCustomRange}
         currentDate={currentDate}
         onDateChange={setCurrentDate}
       />
 
       <div className="flex-1 p-6 space-y-5">
+
+        {/* Filtro por intervalo de datas */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-3 flex-wrap">
+            <DateRangePicker
+              from={dateFrom}
+              to={dateTo}
+              onChange={(f, t) => {
+                setDateFrom(f);
+                setDateTo(t);
+              }}
+            />
+            {refetching && (
+              <Loader2 className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
+            )}
+            <span
+              className={`text-xs px-2 py-1 rounded-md border ${
+                hasCustomRange
+                  ? "bg-indigo-500/10 border-indigo-500/30 text-indigo-300"
+                  : "bg-zinc-800/60 border-zinc-700/60 text-zinc-400"
+              }`}
+            >
+              {hasCustomRange
+                ? `Modo: período custom [${format(new Date(dateFrom + "T12:00:00"), "dd/MM")} - ${format(new Date(dateTo + "T12:00:00"), "dd/MM")}]`
+                : `Modo: mês [${format(currentDate, "MMMM yyyy", { locale: ptBR }).replace(/^./, (c) => c.toUpperCase())}]`}
+            </span>
+          </div>
+          {(dateFrom || dateTo) && (
+            <button
+              onClick={() => {
+                setDateFrom("");
+                setDateTo("");
+              }}
+              className="text-xs text-zinc-400 hover:text-white transition-colors"
+            >
+              Limpar e usar mês do cabeçalho
+            </button>
+          )}
+          <span
+            className="ml-auto text-xs text-zinc-600 hidden sm:inline"
+            title="Atualização automática a cada 5min"
+          >
+            {refreshLabel}
+          </span>
+        </div>
 
         {/* ── 1. Painel de Liquidez ─────────────────────────────────────── */}
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
@@ -535,7 +634,10 @@ export default function FluxoCaixaPage() {
               <div className="w-7 h-7 rounded-lg bg-indigo-600/15 flex items-center justify-center">
                 <Wallet className="w-4 h-4 text-indigo-400" />
               </div>
-              <span className="text-xs text-zinc-500">Saldo em Caixa</span>
+              <span className="text-xs text-zinc-500 flex items-center gap-1">
+                Saldo em Caixa
+                <InfoTooltip size="sm" text="Soma dos saldos de todas as contas bancárias hoje. É o dinheiro que você tem disponível agora." />
+              </span>
             </div>
             {loading ? (
               <div className="h-7 skeleton rounded w-32 mb-2" />
@@ -582,7 +684,10 @@ export default function FluxoCaixaPage() {
           <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
             <div className="flex items-center gap-2 mb-2">
               <ArrowUpCircle className="w-4 h-4 text-emerald-400" />
-              <span className="text-xs text-zinc-500">A Receber</span>
+              <span className="text-xs text-zinc-500 flex items-center gap-1">
+                Total a Receber
+                <InfoTooltip size="sm" text="Lançamentos pendentes ou a receber programados (entradas) — soma de tudo que ainda vai entrar." />
+              </span>
             </div>
             {loading ? (
               <div className="h-6 skeleton rounded w-24" />
@@ -603,7 +708,10 @@ export default function FluxoCaixaPage() {
           <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
             <div className="flex items-center gap-2 mb-2">
               <ArrowDownCircle className="w-4 h-4 text-red-400" />
-              <span className="text-xs text-zinc-500">A Pagar</span>
+              <span className="text-xs text-zinc-500 flex items-center gap-1">
+                Total a Pagar
+                <InfoTooltip size="sm" text="Lançamentos pendentes ou em atraso programados (saídas) — soma de tudo que ainda precisa ser pago." />
+              </span>
             </div>
             {loading ? (
               <div className="h-6 skeleton rounded w-24" />
@@ -628,7 +736,10 @@ export default function FluxoCaixaPage() {
               ) : (
                 <TrendingDown className="w-4 h-4 text-red-400" />
               )}
-              <span className="text-xs text-zinc-500">Posição Líquida</span>
+              <span className="text-xs text-zinc-500 flex items-center gap-1">
+                Posição Líquida
+                <InfoTooltip size="sm" text="A receber menos a pagar. Quanto sobra (ou falta) no curto prazo se todos os lançamentos forem cumpridos." />
+              </span>
             </div>
             {loading ? (
               <div className="h-6 skeleton rounded w-24" />
@@ -656,7 +767,10 @@ export default function FluxoCaixaPage() {
                     : "text-red-400"
                 }`}
               />
-              <span className="text-xs text-zinc-500">Runway</span>
+              <span className="text-xs text-zinc-500 flex items-center gap-1">
+                Runway
+                <InfoTooltip size="sm" text="Quantos dias a empresa aguenta no caixa atual mantendo o burn rate diário. Verde >90d, amarelo 30-90d, vermelho <30d." />
+              </span>
             </div>
             {loading ? (
               <div className="h-6 skeleton rounded w-16" />
@@ -749,8 +863,9 @@ export default function FluxoCaixaPage() {
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
           <div className="flex items-center justify-between mb-1">
             <div>
-              <h3 className="text-sm font-semibold text-zinc-100">
+              <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-1.5">
                 Projeção de Caixa — 60 dias
+                <InfoTooltip text="Saldo projetado para os próximos 60 dias. O ponto mais baixo é o 'saldo mínimo projetado' — o pior cenário se todos os recebíveis e pagamentos acontecerem no prazo." />
               </h3>
               <p className="text-xs text-zinc-500 mt-0.5">
                 Baseado nos vencimentos de recebíveis e pagamentos pendentes
@@ -966,7 +1081,10 @@ export default function FluxoCaixaPage() {
                 <p className="text-xs text-zinc-500 mt-0.5">saldo realizado</p>
                 <div className="mt-3 space-y-1.5 pt-3 border-t border-zinc-800">
                   <div className="flex justify-between text-xs">
-                    <span className="text-zinc-500">Projeção final</span>
+                    <span className="text-zinc-500 flex items-center gap-1">
+                      Projeção final
+                      <InfoTooltip size="sm" text="Resultado projetado considerando entradas + saídas realizadas e previstas até o fim do mês." />
+                    </span>
                     <span
                       className={`font-medium ${
                         monthResult >= 0 ? "text-violet-400" : "text-red-400"
@@ -976,11 +1094,17 @@ export default function FluxoCaixaPage() {
                     </span>
                   </div>
                   <div className="flex justify-between text-xs">
-                    <span className="text-zinc-500">Burn rate</span>
+                    <span className="text-zinc-500 flex items-center gap-1">
+                      Burn rate
+                      <InfoTooltip size="sm" text="Velocidade que a empresa queima caixa por mês. Quanto sai a mais do que entra." />
+                    </span>
                     <RunwayBadge days={data?.runway ?? 365} />
                   </div>
                   <div className="flex justify-between text-xs">
-                    <span className="text-zinc-500">Custo/dia</span>
+                    <span className="text-zinc-500 flex items-center gap-1">
+                      Custo/dia
+                      <InfoTooltip size="sm" text="Quanto a empresa gasta em média por dia. Calculado a partir do burn rate dos últimos 30 dias." />
+                    </span>
                     <span className="text-zinc-400">
                       {formatCurrency(data?.burnRate ?? 0, { compact: true })}
                     </span>
@@ -1139,32 +1263,91 @@ export default function FluxoCaixaPage() {
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
           <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
             <h3 className="text-sm font-semibold text-zinc-100">Extrato do Período</h3>
-            {!loading && data && (
-              <span className="text-xs text-zinc-500">
-                {data.monthTransactions.length} lançamentos
-              </span>
-            )}
+            <div className="flex items-center gap-3">
+              {!loading && data && (
+                <span className="text-xs text-zinc-500">
+                  {data.monthTransactions.length} lançamentos
+                </span>
+              )}
+              {!loading && data && data.monthTransactions.length > 0 && (
+                <button
+                  onClick={() => {
+                    const sorted = [...data.monthTransactions].sort((a, b) => {
+                      const dA = new Date(a.paymentDate ?? a.dueDate ?? a.competenceDate).getTime();
+                      const dB = new Date(b.paymentDate ?? b.dueDate ?? b.competenceDate).getTime();
+                      return dA - dB;
+                    });
+                    const headers = ["Vencimento", "Pagamento", "Descrição", "Categoria", "Status", "Entrada", "Saída"];
+                    const rows = sorted.map((tx) => [
+                      tx.dueDate ? new Date(tx.dueDate) : "",
+                      tx.paymentDate ? new Date(tx.paymentDate) : "",
+                      tx.description,
+                      tx.category?.name ?? "",
+                      tx.status,
+                      tx.type === "INCOME" ? tx.amount : "",
+                      tx.type === "EXPENSE" ? tx.amount : "",
+                    ]);
+                    const today = new Date().toISOString().slice(0, 10);
+                    downloadSpreadsheet(`extrato-${today}`, headers, rows);
+                  }}
+                  className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors"
+                  title="Baixar extrato em planilha (CSV)"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Baixar
+                </button>
+              )}
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-zinc-800">
-                  <th className="text-left px-4 py-2 text-xs text-zinc-500">Data</th>
-                  <th className="text-left px-4 py-2 text-xs text-zinc-500">Descrição</th>
-                  <th className="text-left px-4 py-2 text-xs text-zinc-500">Categoria</th>
-                  <th className="text-left px-4 py-2 text-xs text-zinc-500 hidden md:table-cell">
-                    Status
-                  </th>
-                  <th className="text-right px-4 py-2 text-xs text-zinc-500">Entrada</th>
-                  <th className="text-right px-4 py-2 text-xs text-zinc-500">Saída</th>
-                  <th className="text-right px-4 py-2 text-xs text-zinc-500">Saldo</th>
+                  {([
+                    { key: "date", label: "Vencimento", align: "left", hidden: false },
+                    { key: "payment", label: "Pagamento", align: "left", hidden: false },
+                    { key: "description", label: "Descrição", align: "left", hidden: false },
+                    { key: "category", label: "Categoria", align: "left", hidden: false },
+                    { key: "status", label: "Status", align: "left", hidden: true },
+                    { key: "income", label: "Entrada", align: "right", hidden: false },
+                    { key: "expense", label: "Saída", align: "right", hidden: false },
+                    { key: "balance", label: "Saldo", align: "right", hidden: false },
+                  ] as { key: SortKey; label: string; align: "left" | "right"; hidden: boolean }[]).map(
+                    (col) => {
+                      const active = sortBy === col.key;
+                      return (
+                        <th
+                          key={col.key}
+                          className={`px-4 py-2 text-xs text-zinc-500 select-none ${
+                            col.align === "right" ? "text-right" : "text-left"
+                          } ${col.hidden ? "hidden md:table-cell" : ""}`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => toggleSort(col.key)}
+                            className={`inline-flex items-center gap-1 hover:text-zinc-200 transition-colors ${
+                              active ? "text-indigo-400" : ""
+                            } ${col.align === "right" ? "flex-row-reverse" : ""}`}
+                          >
+                            <span>{col.label}</span>
+                            {active &&
+                              (sortDir === "asc" ? (
+                                <ChevronUp className="w-3 h-3" />
+                              ) : (
+                                <ChevronDown className="w-3 h-3" />
+                              ))}
+                          </button>
+                        </th>
+                      );
+                    }
+                  )}
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   Array.from({ length: 5 }).map((_, i) => (
                     <tr key={i} className="border-b border-zinc-800/50">
-                      {Array.from({ length: 7 }).map((_, j) => (
+                      {Array.from({ length: 8 }).map((_, j) => (
                         <td key={j} className="px-4 py-2.5">
                           <div className="h-3 skeleton rounded" />
                         </td>
@@ -1174,7 +1357,7 @@ export default function FluxoCaixaPage() {
                 ) : !data || data.monthTransactions.length === 0 ? (
                   <tr>
                     <td
-                      colSpan={7}
+                      colSpan={8}
                       className="px-4 py-10 text-center text-zinc-600 text-sm"
                     >
                       Nenhum lançamento neste período
@@ -1197,16 +1380,70 @@ export default function FluxoCaixaPage() {
                       OVERDUE: "Atrasado",
                       PREDICTED: "Previsto",
                     };
-                    return data.monthTransactions.map((tx) => {
-                      if (tx.type === "INCOME") runningBalance += tx.amount;
-                      else runningBalance -= tx.amount;
+                    // Sempre calcular o saldo corrente em ordem cronológica
+                    // (para que "Saldo" seja consistente), depois aplicar o
+                    // sort do usuário sobre as linhas já enriquecidas.
+                    const chronological = [...data.monthTransactions].sort((a, b) => {
+                      const dateA = new Date(a.paymentDate ?? a.dueDate ?? a.competenceDate).getTime();
+                      const dateB = new Date(b.paymentDate ?? b.dueDate ?? b.competenceDate).getTime();
+                      return dateA - dateB;
+                    });
+                    const balanceMap = new Map<string, number>();
+                    let rb = 0;
+                    for (const tx of chronological) {
+                      if (tx.type === "INCOME") rb += tx.amount;
+                      else rb -= tx.amount;
+                      balanceMap.set(tx.id, rb);
+                    }
+
+                    const dirMul = sortDir === "asc" ? 1 : -1;
+                    const cmpStr = (a: string, b: string) =>
+                      a.localeCompare(b, "pt-BR", { sensitivity: "base" });
+                    const txDate = (t: Transaction) =>
+                      new Date(t.dueDate ?? t.paymentDate ?? t.competenceDate).getTime();
+                    const txPayment = (t: Transaction) =>
+                      t.paymentDate ? new Date(t.paymentDate).getTime() : Number.POSITIVE_INFINITY;
+
+                    const sorted = [...chronological].sort((a, b) => {
+                      switch (sortBy) {
+                        case "date":
+                          return (txDate(a) - txDate(b)) * dirMul;
+                        case "payment":
+                          return (txPayment(a) - txPayment(b)) * dirMul;
+                        case "description":
+                          return cmpStr(a.description, b.description) * dirMul;
+                        case "category":
+                          return cmpStr(a.category?.name ?? "", b.category?.name ?? "") * dirMul;
+                        case "status":
+                          return cmpStr(a.status, b.status) * dirMul;
+                        case "income": {
+                          const ai = a.type === "INCOME" ? a.amount : 0;
+                          const bi = b.type === "INCOME" ? b.amount : 0;
+                          return (ai - bi) * dirMul;
+                        }
+                        case "expense": {
+                          const ax = a.type === "EXPENSE" ? a.amount : 0;
+                          const bx = b.type === "EXPENSE" ? b.amount : 0;
+                          return (ax - bx) * dirMul;
+                        }
+                        case "balance":
+                          return ((balanceMap.get(a.id) ?? 0) - (balanceMap.get(b.id) ?? 0)) * dirMul;
+                        default:
+                          return 0;
+                      }
+                    });
+                    return sorted.map((tx) => {
+                      runningBalance = balanceMap.get(tx.id) ?? 0;
                       return (
                         <tr
                           key={tx.id}
                           className="border-b border-zinc-800/50 hover:bg-zinc-800/20"
                         >
                           <td className="px-4 py-2.5 text-xs text-zinc-400 whitespace-nowrap">
-                            {formatDate(tx.competenceDate)}
+                            {tx.dueDate ? formatDate(tx.dueDate) : "—"}
+                          </td>
+                          <td className="px-4 py-2.5 text-xs text-zinc-400 whitespace-nowrap">
+                            {tx.paymentDate ? formatDate(tx.paymentDate) : "—"}
                           </td>
                           <td className="px-4 py-2.5 text-zinc-200 text-xs max-w-[200px] truncate">
                             {tx.description}

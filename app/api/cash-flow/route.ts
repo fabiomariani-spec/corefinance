@@ -1,6 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getCompanyId } from "@/lib/auth";
+import { withAuth } from "@/lib/api-handler";
 import {
   addDays,
   startOfDay,
@@ -13,17 +12,28 @@ import {
 } from "date-fns";
 import { ptBR } from "date-fns/locale";
 
-export async function GET(request: NextRequest) {
-  try {
-    const companyId = await getCompanyId();
-    const { searchParams } = new URL(request.url);
-    const today = startOfDay(new Date());
+export const GET = withAuth(async ({ companyId, req }) => {
+  const { searchParams } = req.nextUrl;
+  const today = startOfDay(new Date());
 
-    // Month for the extrato/bar chart
+    // Range para o extrato/bar chart.
+    // Aceita `startDate`/`endDate` (YYYY-MM-DD) — se ambos vierem, usa o
+    // range custom. Caso contrário, cai no mês de `month` (YYYY-MM) ou no
+    // mês atual. A UI pode passar qualquer período (semana, trimestre, etc).
+    const startDateParam = searchParams.get("startDate");
+    const endDateParam = searchParams.get("endDate");
     const monthParam = searchParams.get("month");
-    const monthRef = monthParam ? new Date(monthParam + "-01T12:00:00") : new Date();
-    const monthStart = startOfMonth(monthRef);
-    const monthEnd = endOfMonth(monthRef);
+
+    let monthStart: Date;
+    let monthEnd: Date;
+    if (startDateParam && endDateParam) {
+      monthStart = new Date(startDateParam + "T00:00:00");
+      monthEnd = new Date(endDateParam + "T23:59:59");
+    } else {
+      const monthRef = monthParam ? new Date(monthParam + "-01T12:00:00") : new Date();
+      monthStart = startOfMonth(monthRef);
+      monthEnd = endOfMonth(monthRef);
+    }
 
     // ─── 1. Account balances (single grouped query instead of N*2) ──────────
     const accounts = await prisma.account.findMany({
@@ -228,28 +238,24 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    return NextResponse.json({
-      accountBalance,
-      accounts: accountsWithBalance,
-      burnRate,
-      avgDailyIncome,
-      runway,
-      totalReceivables,
-      totalPayables,
-      receivables: receivables.map((t) => ({ ...t, amount: Number(t.amount) })),
-      payables: payables.map((t) => ({ ...t, amount: Number(t.amount) })),
-      projection,
-      firstNegativeDay,
-      minProjectedBalance,
-      monthSummary,
-      monthTransactions: monthTransactions.map((t) => ({
-        ...t,
-        amount: Number(t.amount),
-      })),
-      dailyData,
-    });
-  } catch (error) {
-    console.error("Cash flow error:", error);
-    return NextResponse.json({ error: "Erro ao carregar fluxo de caixa", detail: String(error) }, { status: 500 });
-  }
-}
+  return {
+    accountBalance,
+    accounts: accountsWithBalance,
+    burnRate,
+    avgDailyIncome,
+    runway,
+    totalReceivables,
+    totalPayables,
+    receivables: receivables.map((t) => ({ ...t, amount: Number(t.amount) })),
+    payables: payables.map((t) => ({ ...t, amount: Number(t.amount) })),
+    projection,
+    firstNegativeDay,
+    minProjectedBalance,
+    monthSummary,
+    monthTransactions: monthTransactions.map((t) => ({
+      ...t,
+      amount: Number(t.amount),
+    })),
+    dailyData,
+  };
+}, { errorMsg: "Erro ao carregar fluxo de caixa" });

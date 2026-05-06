@@ -1,19 +1,20 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { formatCurrency } from "@/lib/formatters";
 import {
   Plus, Search, CalendarDays, MapPin, User, ChevronRight,
-  Loader2, TrendingUp, Wallet, CheckCircle2, BarChart2,
+  Loader2, TrendingUp, Wallet, CheckCircle2, BarChart2, X,
 } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
+import { useDebounce } from "@/lib/use-debounce";
 
 const EVENT_STATUS_LABELS: Record<string, string> = {
   PLANNING:         "Planejamento",
@@ -50,7 +51,13 @@ export default function EventosPage() {
   const router = useRouter();
   const [events, setEvents]     = useState<EventSummary[]>([]);
   const [loading, setLoading]   = useState(true);
-  const [search, setSearch]     = useState("");
+  // Refetches mantêm a lista visível com spinner discreto — só a primeira
+  // carga mostra o loader cheio.
+  const [refetching, setRefetching] = useState(false);
+  const hasFetchedRef = useRef(false);
+  const [, startTransition] = useTransition();
+  const [searchInput, setSearchInput] = useState("");
+  const search = useDebounce(searchInput, 300);
   const [statusFilter, setStatusFilter] = useState("all");
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
@@ -59,7 +66,8 @@ export default function EventosPage() {
   const [formError, setFormError] = useState("");
 
   const load = useCallback(async () => {
-    setLoading(true);
+    if (!hasFetchedRef.current) setLoading(true);
+    else setRefetching(true);
     try {
       const params = new URLSearchParams();
       if (statusFilter !== "all") params.set("status", statusFilter);
@@ -69,6 +77,8 @@ export default function EventosPage() {
       setEvents(Array.isArray(data) ? data : []);
     } finally {
       setLoading(false);
+      setRefetching(false);
+      hasFetchedRef.current = true;
     }
   }, [statusFilter, search]);
 
@@ -135,9 +145,12 @@ export default function EventosPage() {
         <div className="flex items-center gap-3 flex-wrap">
           <div className="relative flex-1 min-w-[200px]">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
-            <Input placeholder="Buscar evento..." className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
+            <Input placeholder="Buscar evento..." className="pl-9 pr-9" value={searchInput} onChange={e => setSearchInput(e.target.value)} />
+            {refetching && (
+              <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-indigo-400 animate-spin" />
+            )}
           </div>
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <Select value={statusFilter} onValueChange={(v) => startTransition(() => setStatusFilter(v))}>
             <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Todos os status</SelectItem>
@@ -155,13 +168,32 @@ export default function EventosPage() {
         {loading ? (
           <div className="flex justify-center py-16"><Loader2 className="w-6 h-6 animate-spin text-zinc-500" /></div>
         ) : events.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 gap-3">
-            <CalendarDays className="w-10 h-10 text-zinc-600" />
-            <p className="text-zinc-500 text-sm">Nenhum evento encontrado</p>
-            <Button variant="outline" size="sm" onClick={() => { setForm({ ...EMPTY_FORM }); setModalOpen(true); }}>
-              <Plus className="w-3.5 h-3.5 mr-1.5" /> Criar primeiro evento
-            </Button>
-          </div>
+          (search.trim() !== "" || statusFilter !== "all") ? (
+            <EmptyState
+              icon={Search}
+              title="Nenhum evento corresponde aos filtros"
+              description="Tente ajustar a busca ou o status."
+              actionLabel={
+                <>
+                  <X className="w-4 h-4" /> Limpar filtros
+                </>
+              }
+              onAction={() => { setSearchInput(""); setStatusFilter("all"); }}
+              actionVariant="outline"
+            />
+          ) : (
+            <EmptyState
+              icon={CalendarDays}
+              title="Sem eventos planejados"
+              description="Crie eventos pra organizar gastos por projeto, lançamento ou ocasião — com budget e aprovação por item."
+              actionLabel={
+                <>
+                  <Plus className="w-4 h-4" /> Novo Evento
+                </>
+              }
+              onAction={() => { setForm({ ...EMPTY_FORM }); setModalOpen(true); }}
+            />
+          )
         ) : (
           <div className="space-y-3">
             {events.map((ev) => {

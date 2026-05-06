@@ -22,7 +22,11 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { formatCurrency, maskCardNumber } from "@/lib/formatters";
 import { CurrencyInput } from "@/components/ui/currency-input";
-import { Plus, CreditCard, Pencil, Trash2, Loader2 } from "lucide-react";
+import { ColorPicker } from "@/components/ui/color-picker";
+import { Plus, CreditCard, Pencil, Loader2, Sparkles } from "lucide-react";
+import { EmptyState } from "@/components/ui/empty-state";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
+import { useClickOutside } from "@/lib/use-click-outside";
 
 interface CreditCardData {
   id: string;
@@ -44,13 +48,184 @@ const BRAND_LABELS: Record<string, string> = {
   AMEX: "Amex",
   ELO: "Elo",
   HIPERCARD: "Hipercard",
+  ITAU: "Itaú",
   OTHER: "Outro",
 };
 
-const COLORS = [
-  "#6366f1", "#8b5cf6", "#ec4899", "#3b82f6", "#10b981",
-  "#f59e0b", "#ef4444", "#14b8a6",
-];
+/** Detecta a bandeira do cartão a partir dos primeiros dígitos. */
+function detectBrand(digits: string): string | null {
+  const d = digits.replace(/\D/g, "");
+  if (d.length < 4) return null;
+  // AMEX: 34 ou 37
+  if (/^3[47]/.test(d)) return "AMEX";
+  // VISA: 4
+  if (/^4/.test(d)) return "VISA";
+  // ELO (aproximação): 6011, 65
+  if (/^6011/.test(d) || /^65/.test(d)) return "ELO";
+  // MASTERCARD: 5 ou 2221-2720
+  if (/^5[1-5]/.test(d)) return "MASTERCARD";
+  if (/^2/.test(d)) {
+    const n = parseInt(d.slice(0, 4), 10);
+    if (n >= 2221 && n <= 2720) return "MASTERCARD";
+  }
+  return null;
+}
+
+/** Popover simples com click-outside. */
+function InlinePopover({
+  open,
+  onClose,
+  children,
+  className,
+}: {
+  open: boolean;
+  onClose: () => void;
+  children: React.ReactNode;
+  className?: string;
+}) {
+  const ref = useClickOutside<HTMLDivElement>(open, onClose);
+  if (!open) return null;
+  return (
+    <div
+      ref={ref}
+      className={`absolute z-50 mt-2 rounded-lg border border-zinc-700 bg-zinc-900 p-3 shadow-xl ${className ?? ""}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** Edição inline de um dia (1-31). */
+function DayEditor({
+  label,
+  value,
+  onSave,
+  tooltip,
+}: {
+  label: string;
+  value: number;
+  onSave: (n: number) => void | Promise<void>;
+  tooltip?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [val, setVal] = useState(String(value));
+  useEffect(() => setVal(String(value)), [value]);
+
+  function commit() {
+    const n = parseInt(val, 10);
+    if (!isNaN(n) && n >= 1 && n <= 31 && n !== value) {
+      onSave(n);
+    } else {
+      setVal(String(value));
+    }
+    setOpen(false);
+  }
+
+  return (
+    <div className="relative">
+      <p className="text-xs text-zinc-600 flex items-center gap-1">
+        {label}
+        {tooltip && <InfoTooltip size="sm" text={tooltip} />}
+      </p>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="text-sm font-medium text-zinc-300 hover:text-indigo-400 transition-colors"
+      >
+        Dia {value}
+      </button>
+      <InlinePopover open={open} onClose={() => { setVal(String(value)); setOpen(false); }}>
+        <div className="flex items-center gap-2">
+          <Input
+            type="number"
+            min={1}
+            max={31}
+            autoFocus
+            value={val}
+            onChange={(e) => setVal(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") commit();
+              if (e.key === "Escape") { setVal(String(value)); setOpen(false); }
+            }}
+            className="w-20"
+          />
+          <Button type="button" size="sm" onClick={commit}>OK</Button>
+        </div>
+      </InlinePopover>
+    </div>
+  );
+}
+
+/** Swatch de cor com ColorPicker em popover. */
+function ColorSwatchEditor({
+  value,
+  onSave,
+}: {
+  value: string;
+  onSave: (c: string) => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-10 h-10 rounded-xl flex items-center justify-center hover:scale-105 transition-transform"
+        style={{ backgroundColor: value + "30", border: `1px solid ${value}40` }}
+        aria-label="Editar cor"
+      >
+        <CreditCard className="w-5 h-5" style={{ color: value }} />
+      </button>
+      <InlinePopover open={open} onClose={() => setOpen(false)} className="left-0">
+        <ColorPicker
+          value={value}
+          onChange={(c) => { onSave(c); setOpen(false); }}
+        />
+      </InlinePopover>
+    </div>
+  );
+}
+
+/** Nome com edição via double-click. */
+function NameEditor({
+  value,
+  onSave,
+}: {
+  value: string;
+  onSave: (s: string) => void | Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(value);
+  useEffect(() => setVal(value), [value]);
+
+  if (editing) {
+    return (
+      <Input
+        autoFocus
+        value={val}
+        onChange={(e) => setVal(e.target.value)}
+        onBlur={() => { setVal(value); setEditing(false); }}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            if (val.trim() && val !== value) onSave(val.trim());
+            setEditing(false);
+          }
+          if (e.key === "Escape") { setVal(value); setEditing(false); }
+        }}
+        className="h-7 text-sm py-1"
+      />
+    );
+  }
+  return (
+    <p
+      className="font-semibold text-zinc-100 cursor-text hover:text-indigo-300 transition-colors"
+      onDoubleClick={() => setEditing(true)}
+      title="Duplo clique para editar"
+    >
+      {value}
+    </p>
+  );
+}
 
 export default function CartaoPage() {
   const [cards, setCards] = useState<CreditCardData[]>([]);
@@ -58,6 +233,8 @@ export default function CartaoPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingCard, setEditingCard] = useState<CreditCardData | null>(null);
   const [saving, setSaving] = useState(false);
+  const [brandAutoDetected, setBrandAutoDetected] = useState(false);
+  const [brandUserOverridden, setBrandUserOverridden] = useState(false);
   const [form, setForm] = useState({
     name: "",
     bank: "",
@@ -84,11 +261,14 @@ export default function CartaoPage() {
     setLoading(false);
   }
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-mount
   useEffect(() => { fetchCards(); }, []);
 
   function openCreate() {
     setEditingCard(null);
     setForm({ name: "", bank: "", brand: "VISA", lastFour: "", limit: 0, closingDay: "1", dueDay: "10", holder: "", color: "#6366f1" });
+    setBrandAutoDetected(false);
+    setBrandUserOverridden(false);
     setModalOpen(true);
   }
 
@@ -105,7 +285,36 @@ export default function CartaoPage() {
       holder: card.holder ?? "",
       color: card.color,
     });
+    setBrandAutoDetected(false);
+    setBrandUserOverridden(false);
     setModalOpen(true);
+  }
+
+  function handleLastFourChange(raw: string) {
+    const digits = raw.replace(/\D/g, "");
+    setForm((f) => ({ ...f, lastFour: digits.slice(0, 4) }));
+    if (!editingCard && !brandUserOverridden && digits.length >= 4) {
+      const detected = detectBrand(digits);
+      if (detected) {
+        setForm((f) => ({ ...f, brand: detected }));
+        setBrandAutoDetected(true);
+      }
+    }
+  }
+
+  /** PATCH com optimistic update para edição inline. */
+  async function patchCard(id: string, patch: Partial<CreditCardData>) {
+    const prev = cards;
+    setCards((cs) => cs.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+    const res = await fetch(`/api/credit-cards/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) {
+      // rollback
+      setCards(prev);
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -160,11 +369,17 @@ export default function CartaoPage() {
             ))}
           </div>
         ) : cards.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-24 text-zinc-500">
-            <CreditCard className="w-12 h-12 mb-3 opacity-20" />
-            <p className="text-sm">Nenhum cartão cadastrado</p>
-            <Button className="mt-4" onClick={openCreate}>Adicionar Cartão</Button>
-          </div>
+          <EmptyState
+            icon={CreditCard}
+            title="Sem cartões cadastrados"
+            description="Cadastre seus cartões pra importar faturas com IA e controlar gastos por estabelecimento."
+            actionLabel={
+              <>
+                <Plus className="w-4 h-4" /> Novo Cartão
+              </>
+            }
+            onAction={openCreate}
+          />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {cards.map((card) => {
@@ -178,14 +393,15 @@ export default function CartaoPage() {
                   {/* Card Header */}
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3">
-                      <div
-                        className="w-10 h-10 rounded-xl flex items-center justify-center"
-                        style={{ backgroundColor: card.color + "30", border: `1px solid ${card.color}40` }}
-                      >
-                        <CreditCard className="w-5 h-5" style={{ color: card.color }} />
-                      </div>
+                      <ColorSwatchEditor
+                        value={card.color}
+                        onSave={(c) => patchCard(card.id, { color: c })}
+                      />
                       <div>
-                        <p className="font-semibold text-zinc-100">{card.name}</p>
+                        <NameEditor
+                          value={card.name}
+                          onSave={(name) => patchCard(card.id, { name })}
+                        />
                         <p className="text-xs text-zinc-500">
                           {card.bank ? `${card.bank} • ` : ""}{BRAND_LABELS[card.brand]}
                         </p>
@@ -222,14 +438,18 @@ export default function CartaoPage() {
 
                   {/* Billing Info */}
                   <div className="flex gap-4 pt-1 border-t border-zinc-800">
-                    <div>
-                      <p className="text-xs text-zinc-600">Fechamento</p>
-                      <p className="text-sm font-medium text-zinc-300">Dia {card.closingDay}</p>
-                    </div>
-                    <div>
-                      <p className="text-xs text-zinc-600">Vencimento</p>
-                      <p className="text-sm font-medium text-zinc-300">Dia {card.dueDay}</p>
-                    </div>
+                    <DayEditor
+                      label="Fechamento"
+                      tooltip="Dia do mês em que a fatura é fechada (corte). Compras feitas após esse dia caem na próxima fatura."
+                      value={card.closingDay}
+                      onSave={(n) => patchCard(card.id, { closingDay: n })}
+                    />
+                    <DayEditor
+                      label="Vencimento"
+                      tooltip="Dia do mês para pagar a fatura. Vence sempre nesse dia — pagamento após gera juros."
+                      value={card.dueDay}
+                      onSave={(n) => patchCard(card.id, { dueDay: n })}
+                    />
                     {card.holder && (
                       <div>
                         <p className="text-xs text-zinc-600">Titular</p>
@@ -262,7 +482,14 @@ export default function CartaoPage() {
               </div>
               <div className="space-y-1.5">
                 <Label>Bandeira</Label>
-                <Select value={form.brand} onValueChange={(v) => setForm({ ...form, brand: v })}>
+                <Select
+                  value={form.brand}
+                  onValueChange={(v) => {
+                    setForm({ ...form, brand: v });
+                    setBrandUserOverridden(true);
+                    setBrandAutoDetected(false);
+                  }}
+                >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {Object.entries(BRAND_LABELS).map(([k, v]) => (
@@ -270,12 +497,23 @@ export default function CartaoPage() {
                     ))}
                   </SelectContent>
                 </Select>
+                {brandAutoDetected && !brandUserOverridden && (
+                  <p className="text-[11px] text-indigo-400 flex items-center gap-1">
+                    <Sparkles className="w-3 h-3" /> Detectado automaticamente
+                  </p>
+                )}
               </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label>Últimos 4 dígitos</Label>
-                <Input placeholder="1234" maxLength={4} value={form.lastFour} onChange={(e) => setForm({ ...form, lastFour: e.target.value })} />
+                <Label>Primeiros dígitos</Label>
+                <Input
+                  placeholder="1234"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={form.lastFour}
+                  onChange={(e) => handleLastFourChange(e.target.value)}
+                />
               </div>
               <div className="space-y-1.5">
                 <Label>Limite *</Label>
@@ -288,11 +526,17 @@ export default function CartaoPage() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
-                <Label>Dia de Fechamento *</Label>
+                <Label className="flex items-center gap-1.5">
+                  Dia de Fechamento *
+                  <InfoTooltip size="sm" text="Dia do mês em que a fatura é fechada (corte). Compras feitas após esse dia caem na próxima fatura." />
+                </Label>
                 <Input type="number" min={1} max={31} placeholder="1" value={form.closingDay} onChange={(e) => setForm({ ...form, closingDay: e.target.value })} required />
               </div>
               <div className="space-y-1.5">
-                <Label>Dia de Vencimento *</Label>
+                <Label className="flex items-center gap-1.5">
+                  Dia de Vencimento *
+                  <InfoTooltip size="sm" text="Dia do mês para pagar a fatura. Vence sempre nesse dia — pagamento após gera juros." />
+                </Label>
                 <Input type="number" min={1} max={31} placeholder="10" value={form.dueDay} onChange={(e) => setForm({ ...form, dueDay: e.target.value })} required />
               </div>
             </div>
@@ -302,17 +546,7 @@ export default function CartaoPage() {
             </div>
             <div className="space-y-1.5">
               <Label>Cor</Label>
-              <div className="flex gap-2">
-                {COLORS.map((color) => (
-                  <button
-                    key={color}
-                    type="button"
-                    className={`w-7 h-7 rounded-full transition-transform ${form.color === color ? "scale-125 ring-2 ring-white ring-offset-2 ring-offset-zinc-900" : ""}`}
-                    style={{ backgroundColor: color }}
-                    onClick={() => setForm({ ...form, color })}
-                  />
-                ))}
-              </div>
+              <ColorPicker value={form.color} onChange={(color) => setForm({ ...form, color })} />
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setModalOpen(false)}>Cancelar</Button>

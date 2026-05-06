@@ -1,15 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { formatCurrency, formatPercent } from "@/lib/formatters";
@@ -30,9 +23,12 @@ import {
   ShoppingBag,
   Star,
   Users,
+  PieChart,
+  Receipt,
+  ArrowUp,
 } from "lucide-react";
-import { startOfMonth, endOfMonth, format, subMonths, parseISO } from "date-fns";
-import { ptBR } from "date-fns/locale";
+import { startOfMonth, endOfMonth, startOfYear, format, subMonths, subDays, parseISO } from "date-fns";
+import { downloadSpreadsheet } from "@/lib/export";
 import {
   BarChart,
   Bar,
@@ -42,6 +38,8 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
+import { EmptyState } from "@/components/ui/empty-state";
 
 // ── Interfaces ────────────────────────────────────────────────────────────────
 
@@ -173,6 +171,28 @@ function RevenueTooltip({ active, payload, label }: {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
+const REPORT_TYPES = [
+  { value: "dre", label: "DRE", icon: PieChart },
+  { value: "revenue", label: "Receita", icon: TrendingUp },
+  { value: "detailed-expenses", label: "Despesas Detalhadas", icon: Receipt },
+] as const;
+
+function toISO(d: Date) {
+  return d.toISOString().split("T")[0];
+}
+
+function buildPresets() {
+  const now = new Date();
+  const lastMonth = subMonths(now, 1);
+  return [
+    { key: "this-month", label: "Este mês", start: toISO(startOfMonth(now)), end: toISO(endOfMonth(now)) },
+    { key: "last-month", label: "Mês passado", start: toISO(startOfMonth(lastMonth)), end: toISO(endOfMonth(lastMonth)) },
+    { key: "last-30", label: "Últimos 30d", start: toISO(subDays(now, 29)), end: toISO(now) },
+    { key: "last-90", label: "Últimos 90d", start: toISO(subDays(now, 89)), end: toISO(now) },
+    { key: "this-year", label: "Este ano", start: toISO(startOfYear(now)), end: toISO(now) },
+  ];
+}
+
 export default function RelatoriosPage() {
   const [reportType, setReportType] = useState("dre");
   const [startDate, setStartDate] = useState(
@@ -186,197 +206,119 @@ export default function RelatoriosPage() {
   const [revenueData, setRevenueData] = useState<RevenueReport | null>(null);
   const [detailedData, setDetailedData] = useState<DetailedReport | null>(null);
 
-  async function handleGenerate() {
-    setLoading(true);
-    setDreData(null);
-    setRevenueData(null);
-    setDetailedData(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const presets = buildPresets();
 
+  async function fetchReport(signal: AbortSignal) {
+    setLoading(true);
     try {
       const res = await fetch(
-        `/api/reports?type=${reportType}&startDate=${startDate}&endDate=${endDate}`
+        `/api/reports?type=${reportType}&startDate=${startDate}&endDate=${endDate}`,
+        { signal }
       );
       const data = await res.json();
+      if (signal.aborted) return;
 
-      if (reportType === "dre") setDreData(data);
-      else if (reportType === "revenue") setRevenueData(data);
-      else if (reportType === "detailed-expenses") setDetailedData(data);
+      // Reset all then assign current
+      setDreData(reportType === "dre" ? data : null);
+      setRevenueData(reportType === "revenue" ? data : null);
+      setDetailedData(reportType === "detailed-expenses" ? data : null);
+    } catch (err) {
+      if ((err as Error).name === "AbortError") return;
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   }
 
+  // Auto-gera relatório com debounce ao mudar tipo/datas
+  useEffect(() => {
+    if (!startDate || !endDate) return;
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      if (abortRef.current) abortRef.current.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      fetchReport(controller.signal);
+    }, 400);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportType, startDate, endDate]);
+
+  function applyPreset(p: { start: string; end: string }) {
+    setStartDate(p.start);
+    setEndDate(p.end);
+  }
+
+  const activePreset = presets.find(
+    (p) => p.start === startDate && p.end === endDate
+  )?.key;
+
   // ── CSV: DRE ───────────────────────────────────────────────────────────────
+  // Formato planilha limpo: uma tabela só (categoria/valor/%) com totais no
+  // topo. Antes tinha vários títulos/separadores que zoavam o Excel.
   function handleExportDRECSV() {
     if (!dreData) return;
+    const headers = ["Categoria", "Valor (R$)", "% sobre Receita"];
     const rows = [
-      ["DRE Gerencial", "", ""],
-      ["Período", dreData.period.start.slice(0, 10), dreData.period.end.slice(0, 10)],
-      ["", "", ""],
-      ["Receita Bruta", formatCurrency(dreData.income), ""],
-      ["Total Despesas", formatCurrency(dreData.expenses), ""],
-      ["Lucro Líquido", formatCurrency(dreData.netProfit), ""],
-      ["Margem Líquida", formatPercent(dreData.netMargin), ""],
-      ["", "", ""],
-      ["Categoria", "Valor", "% Receita"],
-      ...dreData.expensesByCategory.map((c) => [
-        c.name,
-        formatCurrency(c.amount),
-        formatPercent(c.percentage),
-      ]),
+      ["RECEITA BRUTA", dreData.income, "100%"],
+      ["TOTAL DESPESAS", -dreData.expenses, formatPercent(dreData.expenses / (dreData.income || 1) * 100)],
+      ["LUCRO LÍQUIDO", dreData.netProfit, formatPercent(dreData.netMargin)],
+      [],
+      ...dreData.expensesByCategory.map((c) => [c.name, -c.amount, formatPercent(c.percentage)]),
     ];
-    downloadCSV(rows, `dre-${startDate}-${endDate}.csv`);
+    downloadSpreadsheet(`dre-${startDate}-${endDate}`, headers, rows);
   }
 
   // ── CSV: Receita ───────────────────────────────────────────────────────────
+  // Formato planilha: uma tabela única com tipo/categoria/valor/percentual.
+  // Cada item tem coluna "Bloco" identificando se é Produto, Cliente, Semana etc.
   function handleExportRevenueCSV() {
     if (!revenueData) return;
     const d = revenueData;
-    const rows: string[][] = [
-      ["ANÁLISE DE RECEITA"],
-      ["Período", d.period.start.slice(0, 10), "a", d.period.end.slice(0, 10)],
-      [],
-      ["=== RESUMO ==="],
-      ["Receita Total", formatCurrency(d.summary.totalIncome)],
-      ["Nº de Lançamentos", String(d.summary.transactionCount)],
-      ["Ticket Médio", formatCurrency(d.summary.avgTicket)],
-      ["Média por Dia", formatCurrency(d.summary.avgPerDay)],
-      ["Média por Semana", formatCurrency(d.summary.avgPerWeek)],
-      [],
-      ["=== RANKING DE PRODUTOS / CATEGORIAS ==="],
-      ["#", "Produto", "Receita", "% do Total", "Qtd", "Ticket Médio"],
-      ...d.byProduct.map((p, i) => [
-        String(i + 1),
-        p.name,
-        formatCurrency(p.amount),
-        formatPercent(p.pctOfRevenue),
-        String(p.count),
-        formatCurrency(p.avgTicket),
-      ]),
-      [],
-      ["=== RANKING DE CLIENTES ==="],
-      ["#", "Cliente", "Receita", "% do Total", "Qtd", "Ticket Médio"],
-      ...d.byCustomer.map((c, i) => [
-        String(i + 1),
-        c.name,
-        formatCurrency(c.amount),
-        formatPercent(c.pctOfRevenue),
-        String(c.count),
-        formatCurrency(c.avgTicket),
-      ]),
-      [],
-      ["=== DISTRIBUIÇÃO SEMANAL ==="],
-      ["Semana", "Receita", "Qtd"],
-      ...d.byWeek.map((w) => [w.label, formatCurrency(w.amount), String(w.count)]),
-      [],
-      ["=== POR DIA DA SEMANA ==="],
-      ["Dia", "Receita", "Qtd"],
-      ...d.byDayOfWeek.map((dw) => [dw.day, formatCurrency(dw.amount), String(dw.count)]),
-      [],
-      ["=== POR PERÍODO DO MÊS ==="],
-      ["Período", "Receita", "Qtd"],
-      ...d.byPeriodOfMonth.map((p) => [p.label, formatCurrency(p.amount), String(p.count)]),
+    const headers = ["Bloco", "Item", "Receita (R$)", "Quantidade", "Ticket Médio (R$)", "% do Total"];
+    const rows = [
+      ["RESUMO", "Receita Total", d.summary.totalIncome, d.summary.transactionCount, d.summary.avgTicket, "100%"],
+      ["RESUMO", "Média por Dia", d.summary.avgPerDay, "", "", ""],
+      ["RESUMO", "Média por Semana", d.summary.avgPerWeek, "", "", ""],
+      ...d.byProduct.map((p) => ["Produto / Categoria", p.name, p.amount, p.count, p.avgTicket, formatPercent(p.pctOfRevenue)]),
+      ...d.byCustomer.map((c) => ["Cliente", c.name, c.amount, c.count, c.avgTicket, formatPercent(c.pctOfRevenue)]),
+      ...d.byWeek.map((w) => ["Semana", w.label, w.amount, w.count, "", ""]),
+      ...d.byDayOfWeek.map((dw) => ["Dia da Semana", dw.day, dw.amount, dw.count, "", ""]),
+      ...d.byPeriodOfMonth.map((p) => ["Período do Mês", p.label, p.amount, p.count, "", ""]),
     ];
-    downloadCSV(rows, `receita-${startDate}-${endDate}.csv`);
+    downloadSpreadsheet(`receita-${startDate}-${endDate}`, headers, rows);
   }
 
   // ── CSV: Análise Detalhada ─────────────────────────────────────────────────
   function handleExportDetailedCSV() {
     if (!detailedData) return;
     const d = detailedData;
-    const rows: string[][] = [
-      ["ANÁLISE DETALHADA DE DESPESAS"],
-      ["Período", d.period.start.slice(0, 10), "a", d.period.end.slice(0, 10)],
-      [],
-      ["=== RESUMO ==="],
-      ["Total Despesas", formatCurrency(d.summary.totalExpenses)],
-      ["Total Receitas", formatCurrency(d.summary.totalIncome)],
-      ["Resultado", formatCurrency(d.summary.netProfit)],
-      ["Margem", formatPercent(d.summary.netMargin)],
-      ["Nº Lançamentos", String(d.summary.expenseCount)],
-      ["Média por Dia", formatCurrency(d.summary.avgExpensePerDay)],
-      [],
-      ["=== DESPESAS POR CATEGORIA ==="],
-      ["#", "Categoria", "Valor", "% Despesas", "% Receita", "Qtd"],
-      ...d.byCategory.map((c, i) => [
-        String(i + 1),
-        c.name,
-        formatCurrency(c.amount),
-        formatPercent(c.pctOfExpenses),
-        formatPercent(c.pctOfIncome),
-        String(c.count),
-      ]),
-      [],
-      ["=== DESPESAS POR DEPARTAMENTO ==="],
-      ["#", "Departamento", "Valor", "% Despesas", "Budget", "% Budget", "Qtd"],
-      ...d.byDepartment.map((dept, i) => [
-        String(i + 1),
-        dept.name,
-        formatCurrency(dept.amount),
-        formatPercent(dept.pctOfExpenses),
-        dept.budget > 0 ? formatCurrency(dept.budget) : "—",
-        dept.budget > 0 ? formatPercent(dept.budgetUtilPct) : "—",
-        String(dept.count),
-      ]),
-      [],
-      ["=== DISTRIBUIÇÃO SEMANAL ==="],
-      ["Semana", "Valor", "Qtd Lançamentos"],
-      ...d.byWeek.map((w) => [w.label, formatCurrency(w.amount), String(w.count)]),
-      [],
+
+    // Tabela única estilo planilha: Bloco/Item/Valor/Pct/Qtd
+    const headers = ["Bloco", "Item", "Valor (R$)", "% Despesas", "Quantidade"];
+    const rows: (string | number)[][] = [
+      ["RESUMO", "Total Despesas", -d.summary.totalExpenses, "100%", d.summary.expenseCount],
+      ["RESUMO", "Total Receitas", d.summary.totalIncome, "", ""],
+      ["RESUMO", "Resultado", d.summary.netProfit, formatPercent(d.summary.netMargin), ""],
+      ["RESUMO", "M\u00E9dia por Dia", -d.summary.avgExpensePerDay, "", ""],
+      ...d.byCategory.map((c) => ["Categoria", c.name, -c.amount, formatPercent(c.pctOfExpenses), c.count]),
+      ...d.byDepartment.map((dept) => ["Departamento", dept.name, -dept.amount, formatPercent(dept.pctOfExpenses), dept.count]),
+      ...d.byWeek.map((w) => ["Semana", w.label, -w.amount, "", w.count]),
+      ...d.byContact.map((c) => ["Contato", c.name, -c.amount, formatPercent(c.pctOfExpenses), c.count]),
     ];
-
-    if (d.byContact.length > 0) {
-      rows.push(
-        ["=== TOP CONTATOS / RESPONSÁVEIS ==="],
-        ["#", "Nome", "Valor", "% Despesas", "Qtd"],
-        ...d.byContact.map((c, i) => [
-          String(i + 1),
-          c.name,
-          formatCurrency(c.amount),
-          formatPercent(c.pctOfExpenses),
-          String(c.count),
-        ]),
-        []
-      );
-    }
-
     if (d.payroll.total > 0) {
-      rows.push(
-        ["=== FOLHA DE PAGAMENTO ==="],
-        ["Total Folha", formatCurrency(d.payroll.total)],
-        ["% das Despesas", formatPercent(d.payroll.pctOfExpenses)],
-        [],
-        ["Departamento", "Valor", "% da Folha"],
-        ...d.payroll.byDepartment.map((p) => [
-          p.name,
-          formatCurrency(p.amount),
-          formatPercent(p.pctOfPayroll),
-        ])
+      rows.push(["FOLHA", "Total Folha", -d.payroll.total, formatPercent(d.payroll.pctOfExpenses), ""]);
+      d.payroll.byDepartment.forEach((p) =>
+        rows.push(["Folha \u2014 Depto", p.name, -p.amount, formatPercent(p.pctOfPayroll) + " (folha)", ""])
       );
     }
-
-    downloadCSV(rows, `despesas-detalhadas-${startDate}-${endDate}.csv`);
+    downloadSpreadsheet(`despesas-detalhadas-${startDate}-${endDate}`, headers, rows);
   }
-
-  function downloadCSV(rows: string[][], filename: string) {
-    const csv = rows.map((r) => r.join(";")).join("\n");
-    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  const months = Array.from({ length: 12 }, (_, i) => {
-    const d = subMonths(new Date(), i);
-    return {
-      label: format(d, "MMMM yyyy", { locale: ptBR }),
-      start: startOfMonth(d),
-      end: endOfMonth(d),
-    };
-  });
 
   const hasData = dreData || revenueData || detailedData;
 
@@ -391,21 +333,68 @@ export default function RelatoriosPage() {
 
         {/* ── Filter Panel ────────────────────────────────────────────────── */}
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4">
-          <h3 className="text-sm font-semibold text-zinc-100">Configurar Relatório</h3>
-          <div className="flex items-end gap-4 flex-wrap">
-            <div className="space-y-1.5 min-w-[220px]">
-              <Label>Tipo de Relatório</Label>
-              <Select value={reportType} onValueChange={setReportType}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="dre">DRE Gerencial</SelectItem>
-                  <SelectItem value="revenue">Análise de Receita</SelectItem>
-                  <SelectItem value="detailed-expenses">Análise Detalhada de Despesas</SelectItem>
-                </SelectContent>
-              </Select>
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-zinc-100">Configurar Relatório</h3>
+            {loading && hasData && (
+              <div className="flex items-center gap-2 text-xs text-zinc-500">
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                Atualizando...
+              </div>
+            )}
+          </div>
+
+          {/* Tipo de Relatório — segmented chips */}
+          <div className="space-y-1.5">
+            <Label>Tipo de Relatório</Label>
+            <div className="inline-flex gap-1 p-1 bg-zinc-950/50 border border-zinc-800 rounded-lg">
+              {REPORT_TYPES.map((t) => {
+                const Icon = t.icon;
+                const active = reportType === t.value;
+                return (
+                  <button
+                    key={t.value}
+                    type="button"
+                    onClick={() => setReportType(t.value)}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium inline-flex items-center gap-1.5 transition-colors ${
+                      active
+                        ? "bg-indigo-600 text-white"
+                        : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                    }`}
+                  >
+                    <Icon className="w-3.5 h-3.5" />
+                    {t.label}
+                  </button>
+                );
+              })}
             </div>
+          </div>
+
+          {/* Período: presets */}
+          <div className="space-y-1.5">
+            <Label>Período</Label>
+            <div className="flex flex-wrap gap-1.5">
+              {presets.map((p) => {
+                const active = activePreset === p.key;
+                return (
+                  <button
+                    key={p.key}
+                    type="button"
+                    onClick={() => applyPreset(p)}
+                    className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                      active
+                        ? "bg-indigo-600 text-white"
+                        : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Datas custom */}
+          <div className="flex items-end gap-4 flex-wrap">
             <div className="space-y-1.5">
               <Label>Data Início</Label>
               <Input
@@ -424,33 +413,6 @@ export default function RelatoriosPage() {
                 className="w-40"
               />
             </div>
-            <div className="flex gap-2">
-              <Button onClick={handleGenerate} disabled={loading}>
-                {loading ? (
-                  <><Loader2 className="w-4 h-4 animate-spin" /> Gerando...</>
-                ) : (
-                  <><BarChart3 className="w-4 h-4" /> Gerar</>
-                )}
-              </Button>
-              <Select
-                onValueChange={(v) => {
-                  const idx = parseInt(v);
-                  setStartDate(months[idx].start.toISOString().split("T")[0]);
-                  setEndDate(months[idx].end.toISOString().split("T")[0]);
-                }}
-              >
-                <SelectTrigger className="w-44">
-                  <SelectValue placeholder="Mês rápido..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {months.map((m, i) => (
-                    <SelectItem key={i} value={String(i)} className="capitalize">
-                      {m.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
           </div>
         </div>
 
@@ -459,7 +421,10 @@ export default function RelatoriosPage() {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div>
-                <h3 className="text-base font-bold text-zinc-100">DRE Gerencial</h3>
+                <h3 className="text-base font-bold text-zinc-100 flex items-center gap-1.5">
+                  DRE Gerencial
+                  <InfoTooltip text="Demonstrativo de Resultado do Exercício. Resumo do que entrou, o que saiu e o que sobrou no período. É o 'extrato de lucro' da empresa." />
+                </h3>
                 <p className="text-xs text-zinc-500 mt-0.5">{periodLabel(dreData.period)}</p>
               </div>
               <Button variant="outline" size="sm" onClick={handleExportDRECSV}>
@@ -493,7 +458,10 @@ export default function RelatoriosPage() {
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
                 <div className="flex items-center gap-2 mb-2">
                   <BarChart3 className="w-4 h-4 text-violet-400" />
-                  <span className="text-xs text-zinc-500">Margem Líquida</span>
+                  <span className="text-xs text-zinc-500 flex items-center gap-1">
+                    Margem Líquida
+                    <InfoTooltip size="sm" text="Lucro como % da Receita. Acima de 20% é saudável; negativa significa que a empresa está pagando pra trabalhar." />
+                  </span>
                 </div>
                 <p className={`text-xl font-bold ${dreData.netMargin >= 20 ? "text-emerald-400" : dreData.netMargin >= 0 ? "text-violet-400" : "text-red-400"}`}>
                   {formatPercent(dreData.netMargin)}
@@ -509,7 +477,12 @@ export default function RelatoriosPage() {
                   <tr className="border-b border-zinc-800">
                     <th className="text-left px-4 py-2 text-xs text-zinc-500">Categoria</th>
                     <th className="text-right px-4 py-2 text-xs text-zinc-500">Valor</th>
-                    <th className="text-right px-4 py-2 text-xs text-zinc-500">% da Receita</th>
+                    <th className="text-right px-4 py-2 text-xs text-zinc-500">
+                      <span className="inline-flex items-center gap-1">
+                        % da Receita
+                        <InfoTooltip size="sm" text="Quanto a categoria representa da receita total. Ajuda priorizar onde cortar custo: categorias com % alta têm mais impacto." />
+                      </span>
+                    </th>
                     <th className="px-4 py-2 w-32 text-xs text-zinc-500">Representação</th>
                   </tr>
                 </thead>
@@ -1344,12 +1317,24 @@ export default function RelatoriosPage() {
           </div>
         )}
 
-        {/* ── Empty state ──────────────────────────────────────────────────── */}
-        {!hasData && !loading && (
-          <div className="flex flex-col items-center justify-center py-24 text-zinc-500">
-            <BarChart3 className="w-12 h-12 mb-3 opacity-20" />
-            <p className="text-sm">Selecione o tipo de relatório e clique em Gerar</p>
-          </div>
+        {/* ── Empty / loading initial state ────────────────────────────────── */}
+        {!hasData && (
+          loading ? (
+            <div className="flex flex-col items-center justify-center py-24 text-zinc-500">
+              <Loader2 className="w-8 h-8 mb-3 animate-spin text-indigo-400" />
+              <p className="text-sm">Gerando relatório...</p>
+            </div>
+          ) : (
+            <EmptyState
+              icon={BarChart3}
+              title="Pronto pra gerar seu relatório"
+              description={
+                <>
+                  Use os filtros acima <ArrowUp className="inline w-3.5 h-3.5 mb-0.5 text-indigo-400" /> pra selecionar um <span className="text-zinc-300 font-medium">tipo</span> (DRE, Receita, Despesas) e o <span className="text-zinc-300 font-medium">período</span>. O relatório aparece aqui automaticamente.
+                </>
+              }
+            />
+          )
         )}
       </div>
     </>

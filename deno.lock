@@ -50,7 +50,7 @@
         "npm:eslint@9",
         "npm:lucide-react@0.577",
         "npm:next-themes@~0.4.6",
-        "npm:next@^16.1.6",
+        "npm:next@^16.2.0",
         "npm:pg@^8.20.0",
         "npm:prisma@^7.5.0",
         "npm:react-day-picker@^9.14.0",

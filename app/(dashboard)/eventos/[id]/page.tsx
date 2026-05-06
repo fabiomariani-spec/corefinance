@@ -6,14 +6,13 @@ import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { formatCurrency } from "@/lib/formatters";
 import {
   Plus, Loader2, ChevronLeft, CalendarDays, MapPin, User, CheckCircle2,
   XCircle, Clock, Wallet, BarChart2, TrendingUp, AlertTriangle, Pencil, Trash2,
-  ArrowRight, ExternalLink,
+  ExternalLink, CheckCheck, X,
 } from "lucide-react";
 
 const EVENT_STATUS_LABELS: Record<string, string> = {
@@ -69,10 +68,13 @@ export default function EventDetailPage() {
   const [itemSaving, setItemSaving] = useState(false);
   const [itemError, setItemError] = useState("");
 
-  // Reject modal
-  const [rejectModal, setRejectModal] = useState<{ item: EventItem } | null>(null);
-  const [rejectReason, setRejectReason] = useState("");
+  // Post-reject toast (motivo opcional após-fato)
+  const [rejectToast, setRejectToast] = useState<{ item: EventItem } | null>(null);
+  const [rejectReasonEdit, setRejectReasonEdit] = useState<{ item: EventItem; reason: string } | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+
+  // Bulk approve
+  const [bulkApproving, setBulkApproving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -111,16 +113,49 @@ export default function EventDetailPage() {
     } finally { setActionLoading(null); }
   }
 
-  async function confirmReject() {
-    if (!rejectModal) return;
-    setActionLoading(rejectModal.item.id + "reject");
+  async function rejectItem(item: EventItem) {
+    setActionLoading(item.id + "reject");
     try {
-      await fetch(`/api/events/${id}/items/${rejectModal.item.id}/reject`, {
+      await fetch(`/api/events/${id}/items/${item.id}/reject`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: rejectReason }),
+        body: JSON.stringify({ reason: null }),
       });
-      setRejectModal(null); setRejectReason(""); load();
+      setRejectToast({ item });
+      load();
+      // Auto-dismiss toast after 6s
+      setTimeout(() => setRejectToast(prev => prev?.item.id === item.id ? null : prev), 6000);
     } finally { setActionLoading(null); }
+  }
+
+  async function saveRejectReason() {
+    if (!rejectReasonEdit) return;
+    const { item, reason } = rejectReasonEdit;
+    setActionLoading(item.id + "reason");
+    try {
+      await fetch(`/api/events/${id}/items/${item.id}/reject`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: reason || null }),
+      });
+      setRejectReasonEdit(null);
+      setRejectToast(null);
+      load();
+    } finally { setActionLoading(null); }
+  }
+
+  async function bulkApproveAll() {
+    if (!event) return;
+    const pendentes = event.items.filter(i => ["DRAFT", "PENDING_APPROVAL"].includes(i.status));
+    if (pendentes.length === 0) return;
+    if (!confirm(`Aprovar ${pendentes.length} lançamento${pendentes.length !== 1 ? "s" : ""} pendente${pendentes.length !== 1 ? "s" : ""}? Cada um será integrado como transação.`)) return;
+    setBulkApproving(true);
+    try {
+      await Promise.all(
+        pendentes.map(item =>
+          fetch(`/api/events/${id}/items/${item.id}/approve`, { method: "POST" })
+        )
+      );
+      await load();
+    } finally { setBulkApproving(false); }
   }
 
   async function deleteItem(item: EventItem) {
@@ -222,11 +257,28 @@ export default function EventDetailPage() {
 
         {/* Items table */}
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-          <div className="px-5 py-3.5 border-b border-zinc-800 flex items-center justify-between">
+          <div className="px-5 py-3.5 border-b border-zinc-800 flex items-center justify-between gap-2 flex-wrap">
             <span className="font-semibold text-zinc-100 text-sm">{event.items.length} lançamento{event.items.length !== 1 ? "s" : ""}</span>
-            <Button size="sm" className="h-8 text-xs" onClick={() => { setEditingItem(null); setItemForm({ ...EMPTY_ITEM }); setItemModal(true); }}>
-              <Plus className="w-3.5 h-3.5 mr-1.5" /> Novo Lançamento
-            </Button>
+            <div className="flex items-center gap-2">
+              {(() => {
+                const pendCount = event.items.filter(i => ["DRAFT", "PENDING_APPROVAL"].includes(i.status)).length;
+                return pendCount >= 1 ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs border-emerald-700/50 bg-emerald-600/10 text-emerald-400 hover:bg-emerald-600/20 hover:text-emerald-300"
+                    onClick={bulkApproveAll}
+                    disabled={bulkApproving}
+                  >
+                    {bulkApproving ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <CheckCheck className="w-3.5 h-3.5 mr-1.5" />}
+                    Aprovar todos pendentes ({pendCount})
+                  </Button>
+                ) : null;
+              })()}
+              <Button size="sm" className="h-8 text-xs" onClick={() => { setEditingItem(null); setItemForm({ ...EMPTY_ITEM }); setItemModal(true); }}>
+                <Plus className="w-3.5 h-3.5 mr-1.5" /> Novo Lançamento
+              </Button>
+            </div>
           </div>
           {event.items.length === 0 ? (
             <div className="flex flex-col items-center py-14 gap-2">
@@ -288,11 +340,12 @@ export default function EventDetailPage() {
                                 {actionLoading === item.id + "approve" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
                               </button>
                               <button
-                                onClick={() => { setRejectModal({ item }); setRejectReason(""); }}
+                                onClick={() => rejectItem(item)}
+                                disabled={actionLoading === item.id + "reject"}
                                 title="Recusar"
-                                className="p-1.5 rounded hover:bg-red-600/20 text-zinc-500 hover:text-red-400 transition-colors"
+                                className="p-1.5 rounded hover:bg-red-600/20 text-zinc-500 hover:text-red-400 transition-colors disabled:opacity-50"
                               >
-                                <XCircle className="w-3.5 h-3.5" />
+                                {actionLoading === item.id + "reject" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />}
                               </button>
                             </>
                           )}
@@ -400,33 +453,75 @@ export default function EventDetailPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Reject Modal */}
-      <Dialog open={!!rejectModal} onOpenChange={() => setRejectModal(null)}>
+      {/* Reject — toast pós-fato com link "Adicionar motivo" */}
+      {rejectToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-zinc-900 border border-red-900/60 rounded-xl shadow-2xl shadow-black/50 px-4 py-3 flex items-center gap-3 max-w-md animate-in slide-in-from-bottom-4 fade-in">
+          <div className="w-8 h-8 rounded-full bg-red-600/20 flex items-center justify-center shrink-0">
+            <XCircle className="w-4 h-4 text-red-400" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-zinc-200 truncate">
+              Item rejeitado: <span className="text-zinc-400">{rejectToast.item.description}</span>
+            </p>
+            <button
+              onClick={() => { setRejectReasonEdit({ item: rejectToast.item, reason: "" }); }}
+              className="text-xs text-indigo-400 hover:text-indigo-300 underline-offset-2 hover:underline transition-colors"
+            >
+              Adicionar motivo
+            </button>
+          </div>
+          <button
+            onClick={() => setRejectToast(null)}
+            className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 transition-colors shrink-0"
+            title="Fechar"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Modal: adicionar motivo de rejeição após-fato */}
+      <Dialog open={!!rejectReasonEdit} onOpenChange={(o) => !o && setRejectReasonEdit(null)}>
         <DialogContent className="max-w-md bg-zinc-950 border-zinc-800">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-red-400"><XCircle className="w-4 h-4" /> Recusar Lançamento</DialogTitle>
+            <DialogTitle className="flex items-center gap-2 text-zinc-100"><XCircle className="w-4 h-4 text-red-400" /> Motivo da Rejeição</DialogTitle>
           </DialogHeader>
           <div className="py-2 space-y-3">
-            <p className="text-sm text-zinc-400">Lançamento: <span className="text-zinc-200 font-medium">{rejectModal?.item.description}</span></p>
+            <p className="text-sm text-zinc-400">Lançamento: <span className="text-zinc-200 font-medium">{rejectReasonEdit?.item.description}</span></p>
             <div className="space-y-1.5">
-              <Label>Motivo da recusa</Label>
-              <textarea value={rejectReason} onChange={e => setRejectReason(e.target.value)} placeholder="Informe o motivo da recusa..." rows={3}
-                className="w-full px-3 py-2 text-sm rounded-md border border-zinc-700 bg-zinc-900 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-red-500 resize-none" />
+              <Label>Motivo (opcional)</Label>
+              <textarea
+                value={rejectReasonEdit?.reason ?? ""}
+                onChange={e => setRejectReasonEdit(s => s ? { ...s, reason: e.target.value } : s)}
+                placeholder="Descreva por que o item foi rejeitado..."
+                rows={3}
+                className="w-full px-3 py-2 text-sm rounded-md border border-zinc-700 bg-zinc-900 text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500 resize-none"
+                autoFocus
+              />
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setRejectModal(null)}>Cancelar</Button>
+            <Button variant="outline" onClick={() => setRejectReasonEdit(null)}>Cancelar</Button>
             <Button
-              className="bg-red-600 hover:bg-red-700 text-white"
-              onClick={confirmReject}
-              disabled={actionLoading?.includes("reject")}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white"
+              onClick={saveRejectReason}
+              disabled={!!actionLoading?.includes("reason")}
             >
-              {actionLoading?.includes("reject") ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <XCircle className="w-4 h-4 mr-2" />}
-              Confirmar Recusa
+              {actionLoading?.includes("reason") ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Salvando...</> : "Salvar motivo"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Bulk approve overlay spinner */}
+      {bulkApproving && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl px-6 py-5 flex items-center gap-3 shadow-2xl">
+            <Loader2 className="w-5 h-5 animate-spin text-indigo-400" />
+            <span className="text-sm text-zinc-200">Aprovando lançamentos pendentes...</span>
+          </div>
+        </div>
+      )}
     </>
   );
 }

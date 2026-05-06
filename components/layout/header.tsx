@@ -1,6 +1,5 @@
 "use client";
 
-import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -18,12 +17,12 @@ import {
   LogOut,
   Settings,
   User,
-  Calendar,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
 import { formatDate } from "@/lib/formatters";
-import { startOfMonth, endOfMonth, subMonths, addMonths } from "date-fns";
+import { subMonths, addMonths } from "date-fns";
+import { useEffect } from "react";
 
 interface HeaderProps {
   title: string;
@@ -59,6 +58,19 @@ export function Header({
     const next = addMonths(currentDate, 1);
     if (next <= new Date()) onDateChange?.(next);
   }
+
+  // Wire global ←/→ shortcut to month nav when this header owns a date nav.
+  useEffect(() => {
+    if (!showDateNav || !onDateChange) return;
+    function onNav(e: Event) {
+      const dir = (e as CustomEvent<{ dir: number }>).detail?.dir;
+      if (dir === -1) handlePrevMonth();
+      else if (dir === 1) handleNextMonth();
+    }
+    window.addEventListener("shortcut:nav-month", onNav as EventListener);
+    return () => window.removeEventListener("shortcut:nav-month", onNav as EventListener);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showDateNav, onDateChange, currentDate]);
 
   return (
     <header className="h-16 border-b border-zinc-800 bg-zinc-900/50 backdrop-blur-sm flex items-center justify-between px-6 shrink-0">

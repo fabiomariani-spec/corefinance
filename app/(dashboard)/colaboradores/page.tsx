@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -13,11 +13,13 @@ import {
   UserRound, Plus, Pencil, Pause, Play, UserX, Trash2,
   Loader2, Check, AlertTriangle, Users, TrendingDown,
   Building2, ChevronDown, ChevronRight, Search, ExternalLink,
-  DollarSign, Save, ChevronLeft,
+  DollarSign, Save, ChevronLeft, X,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { format } from "date-fns";
-import { ptBR } from "date-fns/locale";
+import { EmptyState } from "@/components/ui/empty-state";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
+import { toast } from "@/lib/toast";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +39,7 @@ interface Employee {
   salary: number;
   dueDayOfMonth: number;
   hireDate: string;
+  birthDate: string | null;
   dismissDate: string | null;
   status: "ACTIVE" | "PAUSED" | "DISMISSED";
   notes: string | null;
@@ -75,6 +78,7 @@ const EMPTY_FORM = {
   salary: "",
   dueDayOfMonth: "5",
   hireDate: format(new Date(), "yyyy-MM-dd"),
+  birthDate: "",
   notes: "",
 };
 
@@ -108,6 +112,7 @@ function EmployeeModal({
         salary: String(editing.salary),
         dueDayOfMonth: String(editing.dueDayOfMonth),
         hireDate: editing.hireDate ? editing.hireDate.slice(0, 10) : format(new Date(), "yyyy-MM-dd"),
+        birthDate: editing.birthDate ? editing.birthDate.slice(0, 10) : "",
         notes: editing.notes ?? "",
       });
     } else {
@@ -198,7 +203,7 @@ function EmployeeModal({
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs text-zinc-400">Dia de Vencimento</Label>
-              <Input type="number" min="1" max="28" value={form.dueDayOfMonth} onChange={(e) => field("dueDayOfMonth", e.target.value)} placeholder="5" className="bg-zinc-800 border-zinc-700 text-xs h-9" />
+              <Input type="number" min="1" max="31" value={form.dueDayOfMonth} onChange={(e) => field("dueDayOfMonth", e.target.value)} placeholder="5" className="bg-zinc-800 border-zinc-700 text-xs h-9" />
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs text-zinc-400">E-mail</Label>
@@ -211,6 +216,10 @@ function EmployeeModal({
             <div className="space-y-1.5">
               <Label className="text-xs text-zinc-400">Data de Contratação</Label>
               <Input type="date" value={form.hireDate} onChange={(e) => field("hireDate", e.target.value)} className="bg-zinc-800 border-zinc-700 text-xs h-9" />
+            </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs text-zinc-400">Data de Nascimento</Label>
+              <Input type="date" value={form.birthDate} onChange={(e) => field("birthDate", e.target.value)} className="bg-zinc-800 border-zinc-700 text-xs h-9" />
             </div>
             <div className="col-span-2 space-y-1.5">
               <Label className="text-xs text-zinc-400">Observações</Label>
@@ -241,6 +250,10 @@ export default function ColaboradoresPage() {
   const router = useRouter();
   const [data, setData] = useState<ApiData | null>(null);
   const [loading, setLoading] = useState(true);
+  // Reload after action (delete/dismiss/edit) usa `refetching` pra manter
+  // a tabela visível com spinner discreto, em vez de resetar pro full-page loader.
+  const [refetching, setRefetching] = useState(false);
+  const hasFetchedRef = useRef(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("ACTIVE");
   const [deptFilter, setDeptFilter] = useState("__all__");
@@ -248,6 +261,7 @@ export default function ColaboradoresPage() {
   const [editing, setEditing] = useState<Employee | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [confirmDismiss, setConfirmDismiss] = useState<Employee | null>(null);
+  const [dismissDate, setDismissDate] = useState<string>(() => format(new Date(), "yyyy-MM-dd"));
   const [confirmDelete, setConfirmDelete] = useState<Employee | null>(null);
   const [simSelected, setSimSelected] = useState<Set<string>>(new Set());
   const [expandedDepts, setExpandedDepts] = useState<Set<string>>(new Set());
@@ -265,9 +279,11 @@ export default function ColaboradoresPage() {
   const [varDateDraft, setVarDateDraft] = useState<Record<string, string>>({});
   const [varSaving, setVarSaving] = useState<string | null>(null);
   const [varLoading, setVarLoading] = useState(false);
+  const [varBulkSaving, setVarBulkSaving] = useState(false);
 
   async function load() {
-    setLoading(true);
+    if (!hasFetchedRef.current) setLoading(true);
+    else setRefetching(true);
     try {
       const res = await fetch("/api/employees");
       const d = await res.json();
@@ -281,6 +297,8 @@ export default function ColaboradoresPage() {
       setData({ employees: [], departments: [], totalMonthlyPayroll: 0 });
     } finally {
       setLoading(false);
+      setRefetching(false);
+      hasFetchedRef.current = true;
     }
   }
 
@@ -326,6 +344,42 @@ export default function ColaboradoresPage() {
     } finally { setVarSaving(null); }
   }
 
+  function getChangedEmployeeIds(): string[] {
+    const ids: string[] = [];
+    const allIds = new Set<string>([
+      ...Object.keys(varDraft),
+      ...Object.keys(varDateDraft),
+      ...Object.keys(varRecords),
+    ]);
+    for (const empId of allIds) {
+      const draftVal = parseFloat(varDraft[empId] || "0") || 0;
+      const savedVal = varRecords[empId]?.amount ?? 0;
+      const draftDate = varDateDraft[empId] ?? "";
+      const savedDate = varRecords[empId]?.paymentDate ?? "";
+      if (draftVal !== savedVal || draftDate !== savedDate) ids.push(empId);
+    }
+    return ids;
+  }
+
+  async function saveAllVariable(employeeIds: string[]) {
+    if (employeeIds.length === 0) return;
+    setVarBulkSaving(true);
+    try {
+      await Promise.all(employeeIds.map((employeeId) => {
+        const amount = parseFloat(varDraft[employeeId] || "0") || 0;
+        const paymentDate = varDateDraft[employeeId] || null;
+        return fetch("/api/employees/variable", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ employeeId, month: varMonth, amount, paymentDate }),
+        });
+      }));
+      await loadVariable(varMonth);
+    } finally {
+      setVarBulkSaving(false);
+    }
+  }
+
   // Filtered list
   const filtered = useMemo(() => {
     if (!data?.employees) return [];
@@ -339,6 +393,19 @@ export default function ColaboradoresPage() {
       return true;
     });
   }, [data, statusFilter, deptFilter, search]);
+
+  // Diferencia "DB vazio" de "filtros zerou resultados" pro empty state.
+  // statusFilter inicia em "ACTIVE" — só conta como filtro se for diferente
+  // do default de quando não tem ninguém cadastrado.
+  const totalEmployees = data?.employees.length ?? 0;
+  const hasActiveEmployeeFilter =
+    search.trim() !== "" || deptFilter !== "__all__" || statusFilter !== "ACTIVE";
+
+  function clearEmployeeFilters() {
+    setSearch("");
+    setStatusFilter("ACTIVE");
+    setDeptFilter("__all__");
+  }
 
   // Dept groups for tab 2
   const deptGroups = useMemo(() => {
@@ -369,18 +436,41 @@ export default function ColaboradoresPage() {
     return activeEmployees.filter((e) => simSelected.has(e.id)).reduce((s, e) => s + Number(e.salary), 0);
   }, [simSelected, activeEmployees]);
 
-  async function changeStatus(employee: Employee, status: "ACTIVE" | "PAUSED" | "DISMISSED") {
+  async function changeStatus(
+    employee: Employee,
+    status: "ACTIVE" | "PAUSED" | "DISMISSED",
+    dismissDate?: string
+  ) {
     setActionLoading(employee.id + status);
+    // Captura status anterior pra possível undo (apenas DISMISSED tem undo)
+    const prevStatus = employee.status;
     try {
       await fetch(`/api/employees/${employee.id}/status`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status }),
+        body: JSON.stringify({ status, dismissDate }),
       });
       await load();
+
+      // Toast com undo apenas em desligamento — pausar/ativar é trivial
+      // de reverter manualmente e poluiria o feed.
+      if (status === "DISMISSED") {
+        toast.success(`${employee.name} dispensado.`, {
+          undo: async () => {
+            await fetch(`/api/employees/${employee.id}/status`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              // Restaura status anterior; backend limpa dismissDate ao receber não-DISMISSED
+              body: JSON.stringify({ status: prevStatus }),
+            });
+            await load();
+          },
+        });
+      }
     } finally {
       setActionLoading(null);
       setConfirmDismiss(null);
+      setDismissDate(format(new Date(), "yyyy-MM-dd"));
     }
   }
 
@@ -420,14 +510,17 @@ export default function ColaboradoresPage() {
 
         {/* KPI bar */}
         <div className="grid grid-cols-4 gap-3">
-          {[
+          {([
             { label: "Total de Colaboradores", value: String(data?.employees.filter((e) => e.status !== "DISMISSED").length ?? 0), sub: "ativos + pausados" },
             { label: "Ativos", value: String(data?.employees.filter((e) => e.status === "ACTIVE").length ?? 0), color: "text-emerald-400" },
-            { label: "Folha Mensal", value: formatCurrency(totalPayroll), color: "text-red-400" },
-            { label: "Folha Anual", value: formatCurrency(totalPayroll * 12), color: "text-amber-400" },
-          ].map((k) => (
+            { label: "Folha Mensal", value: formatCurrency(totalPayroll), color: "text-red-400", tooltip: "Soma de todos os salários fixos dos colaboradores ativos. É quanto sai por mês com folha de pagamento." },
+            { label: "Folha Anual", value: formatCurrency(totalPayroll * 12), color: "text-amber-400", tooltip: "Folha mensal multiplicada por 12. Custo anual estimado com salários fixos (sem bônus, variáveis ou encargos)." },
+          ] as { label: string; value: string; sub?: string; color?: string; tooltip?: string }[]).map((k) => (
             <div key={k.label} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-              <p className="text-xs text-zinc-500">{k.label}</p>
+              <p className="text-xs text-zinc-500 flex items-center gap-1">
+                {k.label}
+                {k.tooltip && <InfoTooltip size="sm" text={k.tooltip} />}
+              </p>
               <p className={`text-xl font-bold mt-1 ${k.color ?? "text-zinc-100"}`}>{k.value}</p>
               {k.sub && <p className="text-xs text-zinc-600 mt-0.5">{k.sub}</p>}
             </div>
@@ -473,6 +566,9 @@ export default function ColaboradoresPage() {
                   ))}
                 </SelectContent>
               </Select>
+              {refetching && (
+                <Loader2 className="w-3.5 h-3.5 text-indigo-400 animate-spin" />
+              )}
               <div className="flex-1" />
               <Button onClick={() => { setEditing(null); setModalOpen(true); }} className="h-8 text-xs">
                 <Plus className="w-3.5 h-3.5 mr-1.5" />Novo Colaborador
@@ -485,10 +581,12 @@ export default function ColaboradoresPage() {
                 <thead>
                   <tr className="border-b border-zinc-800">
                     <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500">Nome</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500">Cargo</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500">Função</th>
                     <th className="text-left px-4 py-3 text-xs font-semibold text-zinc-500">Departamento</th>
                     <th className="text-right px-4 py-3 text-xs font-semibold text-zinc-500">Salário</th>
                     <th className="text-center px-4 py-3 text-xs font-semibold text-zinc-500">Vcto</th>
+                    <th className="text-center px-4 py-3 text-xs font-semibold text-zinc-500">Início</th>
+                    <th className="text-center px-4 py-3 text-xs font-semibold text-zinc-500">Distrato</th>
                     <th className="text-center px-4 py-3 text-xs font-semibold text-zinc-500">Status</th>
                     <th className="text-right px-4 py-3 text-xs font-semibold text-zinc-500">Ações</th>
                   </tr>
@@ -496,9 +594,45 @@ export default function ColaboradoresPage() {
                 <tbody>
                   {filtered.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="text-center py-12 text-zinc-500 text-xs">
-                        <UserRound className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                        Nenhum colaborador encontrado
+                      <td colSpan={9} className="px-0 py-0">
+                        {totalEmployees === 0 ? (
+                          <EmptyState
+                            icon={UserRound}
+                            title="Sem colaboradores"
+                            description="Cadastre sua equipe pra automatizar a folha de pagamento e gerar lançamentos mensais."
+                            actionLabel={
+                              <>
+                                <Plus className="w-4 h-4" /> Novo Colaborador
+                              </>
+                            }
+                            onAction={() => { setEditing(null); setModalOpen(true); }}
+                          />
+                        ) : hasActiveEmployeeFilter ? (
+                          <EmptyState
+                            icon={Search}
+                            title="Nenhum colaborador corresponde aos filtros"
+                            description="Tente ajustar a busca, status ou departamento."
+                            actionLabel={
+                              <>
+                                <X className="w-4 h-4" /> Limpar filtros
+                              </>
+                            }
+                            onAction={clearEmployeeFilters}
+                            actionVariant="outline"
+                          />
+                        ) : (
+                          <EmptyState
+                            icon={UserRound}
+                            title="Sem colaboradores ativos"
+                            description="Reative ou cadastre colaboradores pra continuar."
+                            actionLabel={
+                              <>
+                                <Plus className="w-4 h-4" /> Novo Colaborador
+                              </>
+                            }
+                            onAction={() => { setEditing(null); setModalOpen(true); }}
+                          />
+                        )}
                       </td>
                     </tr>
                   ) : (
@@ -532,6 +666,12 @@ export default function ColaboradoresPage() {
                             {formatCurrency(Number(emp.salary))}
                           </td>
                           <td className="px-4 py-3 text-center text-xs text-zinc-400">dia {emp.dueDayOfMonth}</td>
+                          <td className="px-4 py-3 text-center text-xs text-zinc-400">
+                            {emp.hireDate ? format(new Date(emp.hireDate), "dd/MM/yyyy") : "—"}
+                          </td>
+                          <td className="px-4 py-3 text-center text-xs text-zinc-400">
+                            {emp.dismissDate ? format(new Date(emp.dismissDate), "dd/MM/yyyy") : "—"}
+                          </td>
                           <td className="px-4 py-3 text-center">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${STATUS_COLOR[emp.status]}`}>
                               {STATUS_LABEL[emp.status]}
@@ -612,10 +752,17 @@ export default function ColaboradoresPage() {
           {/* ─── TAB 2: Por Departamento ──────────────────────────── */}
           <TabsContent value="departamentos" className="space-y-3 mt-4">
             {deptGroups.length === 0 ? (
-              <div className="text-center py-16 text-zinc-500 text-xs">
-                <Building2 className="w-8 h-8 mx-auto mb-2 opacity-30" />
-                Nenhum colaborador ativo cadastrado
-              </div>
+              <EmptyState
+                icon={Building2}
+                title="Sem colaboradores ativos"
+                description="Cadastre colaboradores e atribua departamentos pra ver a distribuição da folha aqui."
+                actionLabel={
+                  <>
+                    <Plus className="w-4 h-4" /> Novo Colaborador
+                  </>
+                }
+                onAction={() => { setEditing(null); setModalOpen(true); }}
+              />
             ) : (
               deptGroups.map((g) => {
                 const key = g.dept?.id ?? "__none__";
@@ -754,19 +901,31 @@ export default function ColaboradoresPage() {
                   {/* Summary cards */}
                   <div className="grid grid-cols-4 gap-3">
                     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                      <p className="text-xs text-zinc-500">Total Fixo</p>
+                      <p className="text-xs text-zinc-500 flex items-center gap-1">
+                        Total Fixo
+                        <InfoTooltip size="sm" text="Soma dos salários fixos dos colaboradores ativos no mês selecionado." />
+                      </p>
                       <p className="text-lg font-bold text-red-400 mt-1">{formatCurrency(totalFixo)}</p>
                     </div>
                     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                      <p className="text-xs text-zinc-500">Total Variável</p>
+                      <p className="text-xs text-zinc-500 flex items-center gap-1">
+                        Total Variável
+                        <InfoTooltip size="sm" text="Pagamento adicional ao salário fixo: bônus, comissão, gratificação, premiação por meta. Soma do que foi lançado no mês." />
+                      </p>
                       <p className="text-lg font-bold text-amber-400 mt-1">{formatCurrency(totalVar)}</p>
                     </div>
                     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                      <p className="text-xs text-zinc-500">Total Geral</p>
+                      <p className="text-xs text-zinc-500 flex items-center gap-1">
+                        Total Geral
+                        <InfoTooltip size="sm" text="Fixo + Variável. Custo total da folha no mês (sem encargos)." />
+                      </p>
                       <p className="text-lg font-bold text-zinc-100 mt-1">{formatCurrency(totalFixo + totalVar)}</p>
                     </div>
                     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                      <p className="text-xs text-zinc-500">% Variável</p>
+                      <p className="text-xs text-zinc-500 flex items-center gap-1">
+                        % Variável
+                        <InfoTooltip size="sm" text="Quanto a remuneração variável representa do total. % alta indica forte componente meritocrático." />
+                      </p>
                       <p className="text-lg font-bold text-indigo-400 mt-1">{(totalFixo + totalVar) > 0 ? ((totalVar / (totalFixo + totalVar)) * 100).toFixed(1) : "0.0"}%</p>
                     </div>
                   </div>
@@ -806,9 +965,29 @@ export default function ColaboradoresPage() {
 
                   {/* Employee variable input table */}
                   <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-                    <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
-                      <span className="text-sm font-semibold text-zinc-100">Remuneração Variável por Colaborador</span>
-                      {varLoading && <Loader2 className="w-4 h-4 animate-spin text-zinc-500" />}
+                    <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-zinc-100">Remuneração Variável por Colaborador</span>
+                        {varLoading && <Loader2 className="w-4 h-4 animate-spin text-zinc-500" />}
+                      </div>
+                      {(() => {
+                        const changedIds = getChangedEmployeeIds();
+                        if (changedIds.length === 0) return null;
+                        return (
+                          <button
+                            onClick={() => saveAllVariable(changedIds)}
+                            disabled={varBulkSaving}
+                            className="inline-flex items-center gap-1.5 px-3 h-8 text-xs font-semibold rounded-md bg-indigo-600 hover:bg-indigo-500 text-white border border-indigo-500/40 shadow-sm shadow-indigo-900/40 transition-colors disabled:opacity-70"
+                            title="Salvar todas as alterações pendentes"
+                          >
+                            {varBulkSaving ? (
+                              <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Salvando {changedIds.length}...</>
+                            ) : (
+                              <><Save className="w-3.5 h-3.5" /> Salvar {changedIds.length} alteraç{changedIds.length === 1 ? "ão" : "ões"}</>
+                            )}
+                          </button>
+                        );
+                      })()}
                     </div>
                     <table className="w-full text-sm">
                       <thead>
@@ -841,7 +1020,15 @@ export default function ColaboradoresPage() {
                                       <span className="text-xs font-bold text-indigo-400">{emp.name.charAt(0)}</span>
                                     </div>
                                     <div>
-                                      <p className="text-xs font-semibold text-zinc-100">{emp.name}</p>
+                                      <p className="text-xs font-semibold text-zinc-100 flex items-center gap-1.5">
+                                        {emp.name}
+                                        {hasChange && (
+                                          <span
+                                            className="inline-block w-1.5 h-1.5 rounded-full bg-indigo-400 shadow-[0_0_6px_rgba(129,140,248,0.6)]"
+                                            title="Alteração não salva"
+                                          />
+                                        )}
+                                      </p>
                                       {emp.role && <p className="text-xs text-zinc-500">{emp.role}</p>}
                                     </div>
                                   </div>
@@ -1018,13 +1205,22 @@ export default function ColaboradoresPage() {
                 <p className="text-xs text-zinc-500">{confirmDismiss.name}</p>
               </div>
             </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs text-zinc-400">Data do desligamento</Label>
+              <Input
+                type="date"
+                value={dismissDate}
+                onChange={(e) => setDismissDate(e.target.value)}
+                className="bg-zinc-800 border-zinc-700 text-xs h-9"
+              />
+            </div>
             <p className="text-xs text-zinc-400">
               Todos os lançamentos de salário <strong>pendentes</strong> serão cancelados. O histórico de pagamentos anteriores é mantido.
             </p>
             <div className="flex gap-2 justify-end">
               <Button variant="outline" onClick={() => setConfirmDismiss(null)} className="text-xs h-8">Cancelar</Button>
               <Button
-                onClick={() => changeStatus(confirmDismiss, "DISMISSED")}
+                onClick={() => changeStatus(confirmDismiss, "DISMISSED", dismissDate)}
                 className="text-xs h-8 bg-red-700 hover:bg-red-600 text-white"
                 disabled={!!actionLoading}
               >

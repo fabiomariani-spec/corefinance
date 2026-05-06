@@ -2,6 +2,9 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { prisma } from "@/lib/prisma";
 import { Sidebar } from "@/components/layout/sidebar";
+import { KeyboardShortcutsProvider } from "@/components/keyboard/global-shortcuts";
+import { NavigationProgressProvider } from "@/components/layout/navigation-progress";
+import { Toaster } from "@/lib/toast";
 
 const DEFAULT_CATEGORIES = [
   { name: "Receita Recorrente", type: "INCOME" as const, color: "#10b981" },
@@ -109,12 +112,23 @@ export default async function DashboardLayout({
     // Don't crash — user likely already has a company
   }
 
+  // Read role pra passar pra sidebar (ela esconde itens fora do permitido)
+  const companyUser = await prisma.companyUser.findFirst({
+    where: { userId: user.id, isActive: true },
+    select: { role: true },
+  });
+  const role = companyUser?.role ?? "VIEWER";
+
   return (
-    <div className="flex h-screen bg-zinc-950 overflow-hidden">
-      <Sidebar />
-      <main className="flex-1 overflow-y-auto flex flex-col">
-        {children}
-      </main>
-    </div>
+    <NavigationProgressProvider>
+      <div className="flex h-screen bg-zinc-950 overflow-hidden">
+        <Sidebar role={role} />
+        <main className="flex-1 overflow-y-auto flex flex-col">
+          {children}
+        </main>
+        <KeyboardShortcutsProvider />
+        <Toaster />
+      </div>
+    </NavigationProgressProvider>
   );
 }
