@@ -20,12 +20,14 @@ export const POST = withAuth(async ({ companyId, req }) => {
     creditCardId,
     referenceMonth,
     dueDate,
+    paymentDate,
     totalAmount,
     items,
   }: {
     creditCardId: string;
     referenceMonth: string;
     dueDate: string;
+    paymentDate: string | null;
     totalAmount: number;
     items: ConfirmItem[];
   } = body;
@@ -81,6 +83,13 @@ export const POST = withAuth(async ({ companyId, req }) => {
     if (existing) continue; // Skip duplicate
 
     const isCredit = item.amount < 0;
+    // Se o usuário informou paymentDate, marca como PAID/RECEIVED.
+    // Sem paymentDate: PENDING/PREDICTED — vai aparecer no /lancamentos
+    // como pendente ordenado pelo dueDate.
+    const isPaid = !!paymentDate;
+    const status = isCredit
+      ? (isPaid ? "RECEIVED" : "PENDING")
+      : (isPaid ? "PAID" : "PENDING");
     const tx = await prisma.transaction.create({
       data: {
         companyId,
@@ -89,12 +98,13 @@ export const POST = withAuth(async ({ companyId, req }) => {
           : item.description,
         amount: Math.abs(item.amount),
         type: isCredit ? "INCOME" : "EXPENSE",
-        status: isCredit ? "RECEIVED" : "PAID",
+        status,
         categoryId: item.categoryId || null,
         departmentId: item.departmentId || null,
         creditCardId,
         competenceDate: parseBRDate(item.date)!,
         dueDate: parseBRDate(dueDate),
+        paymentDate: paymentDate ? parseBRDate(paymentDate) : null,
         paymentMethod: "CREDIT_CARD",
         importedFromInvoiceId: invoiceId,
         importSource: "invoice_import",

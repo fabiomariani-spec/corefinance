@@ -67,6 +67,9 @@ export default function FaturasPage() {
   const [confirmed, setConfirmed] = useState<{ invoiceId: string; created: number; skipped: number } | null>(null);
   const [showAnalysis, setShowAnalysis] = useState(true);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+  // Datas editáveis na revisão (sobrescrevem o que foi extraído)
+  const [editDueDate, setEditDueDate] = useState<string>("");
+  const [editPaymentDate, setEditPaymentDate] = useState<string>("");
   const [autoCountdown, setAutoCountdown] = useState(false);
   const autoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -143,6 +146,16 @@ export default function FaturasPage() {
 
       setResult(data);
       setItems(data.items.map((item) => ({ ...item, include: true })));
+      // Pré-preenche vencimento com o que a IA extraiu (formato YYYY-MM-DD pro <input type="date">)
+      if (data.dueDate) {
+        const d = data.dueDate.includes("/")
+          ? data.dueDate.split("/").reverse().join("-")
+          : data.dueDate.slice(0, 10);
+        setEditDueDate(d);
+      } else {
+        setEditDueDate("");
+      }
+      setEditPaymentDate("");
       setStep("review");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro desconhecido");
@@ -160,7 +173,8 @@ export default function FaturasPage() {
       body: JSON.stringify({
         creditCardId: selectedCard,
         referenceMonth: result.referenceMonth ?? new Date().toISOString().slice(0, 7),
-        dueDate: result.dueDate,
+        dueDate: editDueDate || result.dueDate,
+        paymentDate: editPaymentDate || null,
         totalAmount: result.totalAmount,
         items,
       }),
@@ -404,13 +418,13 @@ export default function FaturasPage() {
         {step === "review" && result && (
           <div className="space-y-4">
             {/* Summary */}
-            <div className="grid grid-cols-4 gap-4">
+            <div className="grid grid-cols-5 gap-4">
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
                 <p className="text-xs text-zinc-500 mb-1">Cartão</p>
-                <p className="font-semibold text-zinc-100">{result.creditCard.name}</p>
+                <p className="font-semibold text-zinc-100 truncate">{result.creditCard.name}</p>
               </div>
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                <p className="text-xs text-zinc-500 mb-1">Lançamentos extraídos</p>
+                <p className="text-xs text-zinc-500 mb-1">Lançamentos</p>
                 <p className="font-semibold text-zinc-100">{result.items.length}</p>
               </div>
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
@@ -418,10 +432,26 @@ export default function FaturasPage() {
                 <p className="font-semibold text-zinc-100">{formatCurrency(result.totalAmount)}</p>
               </div>
               <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-                <p className="text-xs text-zinc-500 mb-1">Vencimento</p>
-                <p className="font-semibold text-zinc-100">
-                  {result.dueDate ? formatDate(result.dueDate) : "—"}
-                </p>
+                <label className="text-xs text-zinc-500 mb-1 block">Vencimento</label>
+                <input
+                  type="date"
+                  value={editDueDate}
+                  onChange={(e) => setEditDueDate(e.target.value)}
+                  className="w-full bg-transparent text-zinc-100 font-semibold text-sm outline-none border-b border-transparent focus:border-indigo-500"
+                />
+              </div>
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                <label className="text-xs text-zinc-500 mb-1 block">Pagamento</label>
+                <input
+                  type="date"
+                  value={editPaymentDate}
+                  onChange={(e) => setEditPaymentDate(e.target.value)}
+                  placeholder="Em aberto"
+                  className="w-full bg-transparent text-zinc-100 font-semibold text-sm outline-none border-b border-transparent focus:border-indigo-500"
+                />
+                {!editPaymentDate && (
+                  <p className="text-[10px] text-zinc-600 mt-0.5">Vazio = pendente</p>
+                )}
               </div>
             </div>
 
