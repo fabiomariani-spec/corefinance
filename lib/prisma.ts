@@ -27,16 +27,23 @@ function createPrismaClient() {
   const adapter = new PrismaPg({
     connectionString: getConnectionString(),
     max: 1,
+    // keepAlive: TCP keepalive evita o pooler dropar conexão entre invocações
+    // do mesmo container Lambda. Reduz reconnect cost em warm starts.
+    keepAlive: true,
+    // idle timeout maior — pgbouncer aguenta, e a função vive ~5min ociosa
+    // antes de o Lambda reciclar
+    idleTimeoutMillis: 30_000,
+    // connection timeout curto pra falhar rápido em vez de esperar 30s
+    connectionTimeoutMillis: 10_000,
   });
   return new PrismaClient({
     adapter,
-    log:
-      process.env.NODE_ENV === "development"
-        ? ["error", "warn"]
-        : ["error"],
+    log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
   });
 }
 
+// Reusa o client em TODAS as envs (incluindo produção). Em Lambda warm,
+// isso elimina o overhead de criar adapter+client a cada invocação
+// (~50-100ms economizados em warm starts).
 export const prisma = globalForPrisma.prisma ?? createPrismaClient();
-
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+globalForPrisma.prisma = prisma;
