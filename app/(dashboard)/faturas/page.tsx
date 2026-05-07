@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
 import {
@@ -67,6 +67,9 @@ export default function FaturasPage() {
   const [confirmed, setConfirmed] = useState<{ invoiceId: string; created: number; skipped: number } | null>(null);
   const [showAnalysis, setShowAnalysis] = useState(true);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+  // Agrupamento visual por estabelecimento na lista de itens (não toca DB)
+  const [groupByEstablishment, setGroupByEstablishment] = useState(true);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   // Datas editáveis na revisão (sobrescrevem o que foi extraído)
   const [editDueDate, setEditDueDate] = useState<string>("");
   const [editPaymentDate, setEditPaymentDate] = useState<string>("");
@@ -223,6 +226,82 @@ export default function FaturasPage() {
   const includedCredits = items.filter((i) => i.include && i.amount < 0).reduce((s, i) => s + i.amount, 0);
   const reconciliationDiff = result ? Math.abs(includedTotal - result.totalAmount) : 0;
   const hasReconciliationIssue = result && reconciliationDiff > 0.10;
+
+  // Agrupa items por estabelecimento (merchantKey). Cada grupo guarda os
+  // índices originais do array `items` pra preservar update/toggle.
+  // Categoria "majoritária" do grupo = mais frequente entre items inclusos.
+  const itemGroups = (() => {
+    const groups = new Map<string, {
+      key: string;
+      label: string;
+      indices: number[];
+    }>();
+    items.forEach((item, idx) => {
+      const key = merchantKey(item.description) || `__solo__${idx}`;
+      if (!groups.has(key)) {
+        groups.set(key, {
+          key,
+          label: item.establishment || item.description,
+          indices: [],
+        });
+      }
+      groups.get(key)!.indices.push(idx);
+    });
+    return Array.from(groups.values()).map((g) => {
+      const groupItems = g.indices.map((i) => items[i]);
+      const total = groupItems.reduce((s, it) => s + it.amount, 0);
+      const includedItems = groupItems.filter((it) => it.include);
+      // Categoria majoritária entre items inclusos
+      const catCounts = new Map<string, number>();
+      for (const it of includedItems) {
+        if (!it.categoryId) continue;
+        catCounts.set(it.categoryId, (catCounts.get(it.categoryId) ?? 0) + 1);
+      }
+      let majorityCategory: string | null = null;
+      let maxCount = 0;
+      for (const [cat, count] of catCounts) {
+        if (count > maxCount) { maxCount = count; majorityCategory = cat; }
+      }
+      const distinctCats = catCounts.size;
+      const allIncluded = groupItems.every((it) => it.include);
+      const someIncluded = groupItems.some((it) => it.include);
+      return {
+        ...g,
+        items: groupItems,
+        total,
+        includedCount: includedItems.length,
+        majorityCategory,
+        hasMixedCategories: distinctCats > 1,
+        checkState: allIncluded ? "all" as const : someIncluded ? "some" as const : "none" as const,
+      };
+    }).sort((a, b) => b.total - a.total);
+  })();
+
+  function toggleGroup(groupKey: string) {
+    const group = itemGroups.find((g) => g.key === groupKey);
+    if (!group) return;
+    const newInclude = group.checkState !== "all"; // se nem todos inclusos, marca todos
+    setItems((prev) => prev.map((it, i) =>
+      group.indices.includes(i) ? { ...it, include: newInclude } : it
+    ));
+  }
+
+  function setGroupCategory(groupKey: string, categoryId: string) {
+    const group = itemGroups.find((g) => g.key === groupKey);
+    if (!group) return;
+    setItems((prev) => prev.map((it, i) =>
+      group.indices.includes(i) ? { ...it, categoryId } : it
+    ));
+  }
+
+  function toggleGroupExpanded(groupKey: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
+  }
 
   // Analysis: group included expenses by category, then by merchant
   const analysisGroups = (() => {
@@ -546,13 +625,28 @@ export default function FaturasPage() {
 
             {/* Items Table */}
             <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-              <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
+              <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between gap-3">
                 <span className="text-sm font-semibold text-zinc-100">
                   {includedCount} de {items.length} lançamentos selecionados
                 </span>
-                <span className="text-sm font-semibold text-zinc-300">
-                  Total: {formatCurrency(includedTotal)}
-                </span>
+                <div className="flex items-center gap-3">
+                  {/* Toggle agrupamento por estabelecimento */}
+                  <button
+                    onClick={() => setGroupByEstablishment((v) => !v)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                      groupByEstablishment
+                        ? "bg-indigo-600/15 text-indigo-300 border border-indigo-600/30"
+                        : "bg-zinc-800/40 text-zinc-400 border border-zinc-700 hover:bg-zinc-800"
+                    }`}
+                    title={groupByEstablishment ? "Desligar agrupamento" : "Agrupar por estabelecimento"}
+                  >
+                    <BarChart2 className="w-3 h-3" />
+                    {groupByEstablishment ? `Agrupado (${itemGroups.length})` : "Agrupar"}
+                  </button>
+                  <span className="text-sm font-semibold text-zinc-300">
+                    Total: {formatCurrency(includedTotal)}
+                  </span>
+                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -568,7 +662,115 @@ export default function FaturasPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {items.map((item, i) => (
+                    {groupByEstablishment && itemGroups.map((group) => {
+                      const isExpanded = expandedGroups.has(group.key);
+                      const isSingleton = group.items.length === 1;
+                      // Singletons renderizam como linha normal (não vale agrupar 1 item)
+                      if (isSingleton) {
+                        const item = group.items[0];
+                        const i = group.indices[0];
+                        return (
+                          <tr key={group.key} className={`border-b border-zinc-800/50 transition-colors ${item.include ? "hover:bg-zinc-800/30" : "opacity-40"}`}>
+                            <td className="px-4 py-2.5">
+                              <button onClick={() => toggleItem(i)} className={`w-5 h-5 rounded flex items-center justify-center border transition-colors ${item.include ? "bg-indigo-600 border-indigo-600" : "border-zinc-600 hover:border-zinc-400"}`}>
+                                {item.include && <Check className="w-3 h-3 text-white" />}
+                              </button>
+                            </td>
+                            <td className="px-4 py-2.5 text-zinc-400 text-xs whitespace-nowrap">{formatDate(item.date)}</td>
+                            <td className="px-4 py-2.5">
+                              <p className="text-zinc-200 font-medium text-xs max-w-[220px] truncate">{item.description}</p>
+                              {item.establishment && item.establishment !== item.description && (<p className="text-zinc-500 text-xs">{item.establishment}</p>)}
+                            </td>
+                            <td className="px-4 py-2.5 text-zinc-400 text-xs">{item.installmentInfo || "—"}</td>
+                            <td className="px-4 py-2.5 min-w-[180px]">
+                              <Select value={item.categoryId ?? ""} onValueChange={(v) => updateCategory(i, v)}>
+                                <SelectTrigger className="h-7 text-xs"><SelectValue placeholder="Categoria..." /></SelectTrigger>
+                                <SelectContent>{result.categories.map((cat) => (<SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>))}</SelectContent>
+                              </Select>
+                            </td>
+                            <td className="px-4 py-2.5">
+                              {item.categoryId ? (<div className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-emerald-600/15 text-emerald-400">Auto</div>) : (<div className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-zinc-700 text-zinc-500">—</div>)}
+                            </td>
+                            <td className={`px-4 py-2.5 text-right font-semibold text-sm ${item.amount < 0 ? "text-emerald-400" : "text-red-400"}`}>{formatCurrency(item.amount)}</td>
+                          </tr>
+                        );
+                      }
+                      // Grupos com 2+ items: linha-resumo + items expandidos
+                      return (
+                        <React.Fragment key={group.key}>
+                          <tr className={`border-b border-zinc-800/50 bg-zinc-900/40 transition-colors ${group.checkState === "none" ? "opacity-40" : "hover:bg-zinc-800/40"}`}>
+                            <td className="px-4 py-2.5">
+                              <button
+                                onClick={() => toggleGroup(group.key)}
+                                className={`w-5 h-5 rounded flex items-center justify-center border transition-colors ${
+                                  group.checkState === "all" ? "bg-indigo-600 border-indigo-600"
+                                  : group.checkState === "some" ? "bg-indigo-600/30 border-indigo-600"
+                                  : "border-zinc-600 hover:border-zinc-400"
+                                }`}
+                                title={group.checkState === "all" ? "Desmarcar todos" : "Marcar todos"}
+                              >
+                                {group.checkState === "all" && <Check className="w-3 h-3 text-white" />}
+                                {group.checkState === "some" && <span className="w-2 h-0.5 bg-white" />}
+                              </button>
+                            </td>
+                            <td className="px-4 py-2.5 text-zinc-500 text-xs">
+                              <button onClick={() => toggleGroupExpanded(group.key)} className="hover:text-zinc-300 flex items-center gap-1">
+                                <ChevronDown className={`w-3 h-3 transition-transform ${isExpanded ? "" : "-rotate-90"}`} />
+                              </button>
+                            </td>
+                            <td className="px-4 py-2.5">
+                              <p className="text-zinc-100 font-semibold text-xs">{group.label}</p>
+                              <p className="text-zinc-500 text-xs">{group.items.length} lançamentos · {group.includedCount} selecionados</p>
+                            </td>
+                            <td className="px-4 py-2.5 text-zinc-500 text-xs">—</td>
+                            <td className="px-4 py-2.5 min-w-[180px]">
+                              <Select value={group.majorityCategory ?? ""} onValueChange={(v) => setGroupCategory(group.key, v)}>
+                                <SelectTrigger className="h-7 text-xs">
+                                  <SelectValue placeholder="Categoria..." />
+                                </SelectTrigger>
+                                <SelectContent>{result.categories.map((cat) => (<SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>))}</SelectContent>
+                              </Select>
+                            </td>
+                            <td className="px-4 py-2.5">
+                              {group.hasMixedCategories ? (
+                                <div className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-amber-600/15 text-amber-400" title="Items com categorias diferentes">Mista</div>
+                              ) : group.majorityCategory ? (
+                                <div className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-emerald-600/15 text-emerald-400">Grupo</div>
+                              ) : (
+                                <div className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-zinc-700 text-zinc-500">—</div>
+                              )}
+                            </td>
+                            <td className={`px-4 py-2.5 text-right font-semibold text-sm ${group.total < 0 ? "text-emerald-400" : "text-red-400"}`}>{formatCurrency(group.total)}</td>
+                          </tr>
+                          {isExpanded && group.indices.map((i) => {
+                            const item = items[i];
+                            return (
+                              <tr key={`${group.key}-${i}`} className={`border-b border-zinc-800/30 bg-zinc-950/30 transition-colors ${item.include ? "hover:bg-zinc-800/20" : "opacity-40"}`}>
+                                <td className="px-4 py-2 pl-8">
+                                  <button onClick={() => toggleItem(i)} className={`w-4 h-4 rounded flex items-center justify-center border transition-colors ${item.include ? "bg-indigo-600 border-indigo-600" : "border-zinc-600 hover:border-zinc-400"}`}>
+                                    {item.include && <Check className="w-2.5 h-2.5 text-white" />}
+                                  </button>
+                                </td>
+                                <td className="px-4 py-2 text-zinc-500 text-xs whitespace-nowrap">{formatDate(item.date)}</td>
+                                <td className="px-4 py-2">
+                                  <p className="text-zinc-300 text-xs max-w-[220px] truncate">{item.description}</p>
+                                </td>
+                                <td className="px-4 py-2 text-zinc-500 text-xs">{item.installmentInfo || "—"}</td>
+                                <td className="px-4 py-2 min-w-[180px]">
+                                  <Select value={item.categoryId ?? ""} onValueChange={(v) => updateCategory(i, v)}>
+                                    <SelectTrigger className="h-6 text-xs"><SelectValue placeholder="—" /></SelectTrigger>
+                                    <SelectContent>{result.categories.map((cat) => (<SelectItem key={cat.id} value={cat.id}>{cat.name}</SelectItem>))}</SelectContent>
+                                  </Select>
+                                </td>
+                                <td className="px-4 py-2 text-xs text-zinc-500">item</td>
+                                <td className={`px-4 py-2 text-right text-xs ${item.amount < 0 ? "text-emerald-400" : "text-red-400"}`}>{formatCurrency(item.amount)}</td>
+                              </tr>
+                            );
+                          })}
+                        </React.Fragment>
+                      );
+                    })}
+                    {!groupByEstablishment && items.map((item, i) => (
                       <tr
                         key={i}
                         className={`border-b border-zinc-800/50 transition-colors ${

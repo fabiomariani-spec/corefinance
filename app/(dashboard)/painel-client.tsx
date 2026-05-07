@@ -493,6 +493,7 @@ export default function DashboardPage() {
           {/* Receita */}
           <Link
             href={incomeHref}
+            prefetch={false}
             className="group relative block cursor-pointer rounded-xl transition-colors hover:[&>*]:border-zinc-700"
           >
             <ExternalLink className="absolute top-3 right-3 w-3 h-3 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none" />
@@ -514,6 +515,7 @@ export default function DashboardPage() {
           {/* Despesas */}
           <Link
             href={expenseHref}
+            prefetch={false}
             className="group relative block cursor-pointer rounded-xl transition-colors hover:[&>*]:border-zinc-700"
           >
             <ExternalLink className="absolute top-3 right-3 w-3 h-3 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none" />
@@ -580,6 +582,7 @@ export default function DashboardPage() {
           {/* Caixa Atual */}
           <Link
             href="/contas"
+            prefetch={false}
             className="group relative block cursor-pointer rounded-xl transition-colors hover:[&>*]:border-zinc-700"
           >
             <ExternalLink className="absolute top-3 right-3 w-3 h-3 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none" />
@@ -594,7 +597,7 @@ export default function DashboardPage() {
           </Link>
 
           {/* Burn Rate */}
-          <Link href="/fluxo-caixa" className="group relative bg-zinc-900 border border-zinc-800 rounded-xl p-5 flex flex-col gap-3 hover:border-zinc-700 transition-colors cursor-pointer">
+          <Link href="/fluxo-caixa" prefetch={false} className="group relative bg-zinc-900 border border-zinc-800 rounded-xl p-5 flex flex-col gap-3 hover:border-zinc-700 transition-colors cursor-pointer">
             <ExternalLink className="absolute top-3 right-3 w-3 h-3 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity" />
             <div className="flex items-start justify-between">
               <p className="text-sm font-medium text-zinc-400 flex items-center gap-1.5">
@@ -632,7 +635,7 @@ export default function DashboardPage() {
           </Link>
 
           {/* Runway */}
-          <Link href="/fluxo-caixa" className="group relative bg-zinc-900 border border-zinc-800 rounded-xl p-5 flex flex-col gap-3 hover:border-zinc-700 transition-colors cursor-pointer">
+          <Link href="/fluxo-caixa" prefetch={false} className="group relative bg-zinc-900 border border-zinc-800 rounded-xl p-5 flex flex-col gap-3 hover:border-zinc-700 transition-colors cursor-pointer">
             <ExternalLink className="absolute top-3 right-3 w-3 h-3 text-zinc-600 opacity-0 group-hover:opacity-100 transition-opacity" />
             <div className="flex items-start justify-between">
               <p className="text-sm font-medium text-zinc-400 flex items-center gap-1.5">
