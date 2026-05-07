@@ -1,3 +1,4 @@
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { withAuth } from "@/lib/api-handler";
 import {
@@ -51,24 +52,118 @@ export const GET = withAuth(async ({ companyId, req }) => {
 
     const { start, end, prevStart, prevEnd } = getRange(period, refDate);
 
-    // ── 1. Cash balance (single grouped query) ──────────────────────────────
-    const allAccounts = await prisma.account.findMany({
-      where: { companyId, isActive: true },
-      select: { id: true, balance: true },
-    });
+    // ── 8 queries em PARALELO via Promise.all ───────────────────────────────
+    // Antes eram sequenciais, somando ~1-2s. Agora ~150-300ms (max da query
+    // mais lenta). Os 2 grandes (currentTransactions + allTrendTxs) tem
+    // cobertura de índice em (companyId, competenceDate).
+    const burn3mStart = startOfMonth(subMonths(refDate, 3));
+    const burn3mEnd = endOfMonth(subMonths(refDate, 1));
+    const trend12mStart = startOfMonth(subMonths(refDate, 12));
+    const trend12mEnd = endOfMonth(refDate);
 
-    const txByAccount = await prisma.transaction.groupBy({
-      by: ["accountId", "type"],
-      where: {
-        companyId,
-        accountId: { not: null },
-        OR: [
-          { type: "INCOME", status: "RECEIVED" },
-          { type: "EXPENSE", status: "PAID" },
-        ],
-      },
-      _sum: { amount: true },
-    });
+    const [
+      allAccounts,
+      txByAccount,
+      company,
+      currentTransactions,
+      prevTransactions,
+      upcomingPayables,
+      creditCardTotals,
+      allDepartments,
+      burn3mTxs,
+      allTrendTxs,
+    ] = await Promise.all([
+      prisma.account.findMany({
+        where: { companyId, isActive: true },
+        select: { id: true, balance: true },
+      }),
+      prisma.transaction.groupBy({
+        by: ["accountId", "type"],
+        where: {
+          companyId,
+          accountId: { not: null },
+          OR: [
+            { type: "INCOME", status: "RECEIVED" },
+            { type: "EXPENSE", status: "PAID" },
+          ],
+        },
+        _sum: { amount: true },
+      }),
+      prisma.company.findFirst({
+        where: { id: companyId },
+        select: { headcount: true },
+      }),
+      prisma.transaction.findMany({
+        where: {
+          companyId,
+          competenceDate: { gte: start, lte: end },
+          status: { not: "CANCELLED" },
+        },
+        include: { category: true, department: true },
+      }),
+      prisma.transaction.findMany({
+        where: {
+          companyId,
+          competenceDate: { gte: prevStart, lte: prevEnd },
+          status: { not: "CANCELLED" },
+        },
+        select: {
+          type: true,
+          amount: true,
+          isPredicted: true,
+          contactId: true,
+          categoryId: true,
+          category: { select: { name: true } },
+        },
+      }),
+      prisma.transaction.findMany({
+        where: {
+          companyId,
+          type: "EXPENSE",
+          status: { in: ["PENDING", "PREDICTED"] },
+          dueDate: {
+            gte: startOfDay(new Date()),
+            lte: endOfDay(addDays(new Date(), 30)),
+          },
+        },
+        orderBy: { dueDate: "asc" },
+        take: 10,
+        include: { category: true },
+      }),
+      prisma.creditCard.findMany({
+        where: { companyId, isActive: true },
+        include: {
+          transactions: {
+            where: {
+              competenceDate: { gte: start, lte: end },
+              status: { not: "CANCELLED" },
+            },
+          },
+        },
+      }),
+      prisma.department.findMany({
+        where: { companyId, isActive: true },
+        select: { id: true, monthlyBudget: true },
+      }),
+      prisma.transaction.findMany({
+        where: {
+          companyId,
+          competenceDate: { gte: burn3mStart, lte: burn3mEnd },
+          isPredicted: false,
+          status: { not: "CANCELLED" },
+        },
+        select: { type: true, amount: true, competenceDate: true },
+      }),
+      prisma.transaction.findMany({
+        where: {
+          companyId,
+          competenceDate: { gte: trend12mStart, lte: trend12mEnd },
+          isPredicted: false,
+          status: { not: "CANCELLED" },
+        },
+        select: { type: true, amount: true, competenceDate: true, contactId: true },
+      }),
+    ]);
 
     const accIncMap: Record<string, number> = {};
     const accExpMap: Record<string, number> = {};
@@ -83,70 +178,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
       0
     );
 
-    // ── 2. Company settings ─────────────────────────────────────────────────
-    const company = await prisma.company.findFirst({
-      where: { id: companyId },
-      select: { headcount: true },
-    });
     const headcount = company?.headcount ?? 0;
-
-    // ── 3. Current & previous period transactions (sequential) ──────────────
-    const currentTransactions = await prisma.transaction.findMany({
-      where: {
-        companyId,
-        competenceDate: { gte: start, lte: end },
-        status: { not: "CANCELLED" },
-      },
-      include: { category: true, department: true },
-    });
-
-    const prevTransactions = await prisma.transaction.findMany({
-      where: {
-        companyId,
-        competenceDate: { gte: prevStart, lte: prevEnd },
-        status: { not: "CANCELLED" },
-      },
-      select: {
-        type: true,
-        amount: true,
-        isPredicted: true,
-        contactId: true,
-        categoryId: true,
-        category: { select: { name: true } },
-      },
-    });
-
-    const upcomingPayables = await prisma.transaction.findMany({
-      where: {
-        companyId,
-        type: "EXPENSE",
-        status: { in: ["PENDING", "PREDICTED"] },
-        dueDate: {
-          gte: startOfDay(new Date()),
-          lte: endOfDay(addDays(new Date(), 30)),
-        },
-      },
-      orderBy: { dueDate: "asc" },
-      take: 10,
-      include: { category: true },
-    });
-
-    const creditCardTotals = await prisma.creditCard.findMany({
-      where: { companyId, isActive: true },
-      include: {
-        transactions: {
-          where: {
-            competenceDate: { gte: start, lte: end },
-            status: { not: "CANCELLED" },
-          },
-        },
-      },
-    });
-
-    const allDepartments = await prisma.department.findMany({
-      where: { companyId, isActive: true },
-      select: { id: true, monthlyBudget: true },
-    });
 
     // ── Current period aggregates ─────────────────────────────────────────────
     const currentIncome = currentTransactions
@@ -176,20 +208,8 @@ export const GET = withAuth(async ({ companyId, req }) => {
       .filter((t) => t.type === "EXPENSE" && !t.isPredicted)
       .reduce((s, t) => s + Number(t.amount), 0);
 
-    // ── Burn Rate (single query for last 3 months) ────────────────────────────
+    // ── Burn Rate (data já buscada no Promise.all acima) ──────────────────────
     const burnRate = Math.max(0, currentExpenses - currentIncome);
-    const burn3mStart = startOfMonth(subMonths(refDate, 3));
-    const burn3mEnd = endOfMonth(subMonths(refDate, 1));
-
-    const burn3mTxs = await prisma.transaction.findMany({
-      where: {
-        companyId,
-        competenceDate: { gte: burn3mStart, lte: burn3mEnd },
-        isPredicted: false,
-        status: { not: "CANCELLED" },
-      },
-      select: { type: true, amount: true, competenceDate: true },
-    });
 
     const burn3mByMonth: Record<string, { inc: number; exp: number }> = {};
     for (const t of burn3mTxs) {
@@ -313,19 +333,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
       return sum + card.transactions.reduce((s, t) => s + Number(t.amount), 0);
     }, 0);
 
-    // ── 12-Month trend + churn (SINGLE query for all 12 months) ──────────────
-    const trend12mStart = startOfMonth(subMonths(refDate, 12));
-    const trend12mEnd = endOfMonth(refDate);
-
-    const allTrendTxs = await prisma.transaction.findMany({
-      where: {
-        companyId,
-        competenceDate: { gte: trend12mStart, lte: trend12mEnd },
-        isPredicted: false,
-        status: { not: "CANCELLED" },
-      },
-      select: { type: true, amount: true, competenceDate: true, contactId: true },
-    });
+    // ── 12-Month trend + churn (allTrendTxs já buscada no Promise.all acima) ─
 
     // Group by month
     const trendByMonth: Record<string, typeof allTrendTxs> = {};
@@ -383,7 +391,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
     const projectedExpenses = currentExpenses + currentExpensesPredicted;
     const projectedProfit = projectedIncome - projectedExpenses;
 
-  return {
+  return NextResponse.json({
     currentMonth: {
       income: currentIncome,
       expenses: currentExpenses,
@@ -432,5 +440,9 @@ export const GET = withAuth(async ({ companyId, req }) => {
     })),
     totalPayables,
     creditCardCommitted,
-  };
+  }, {
+    headers: {
+      "Cache-Control": "private, max-age=15, stale-while-revalidate=120",
+    },
+  });
 }, { errorMsg: "Erro ao carregar dashboard" });

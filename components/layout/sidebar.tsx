@@ -188,6 +188,7 @@ export function Sidebar({ role = "ADMIN" }: { role?: UserRole }) {
                       <Link
                         key={item.href}
                         href={item.href}
+                        prefetch={false}
                         onClick={() => handleNavClick(item.href)}
                         className={cn(
                           "flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-all duration-150",
@@ -245,6 +246,7 @@ export function Sidebar({ role = "ADMIN" }: { role?: UserRole }) {
             <Link
               key={item.href}
               href={item.href}
+              prefetch={false}
               title={collapsed ? item.label : undefined}
               onClick={() => handleNavClick(item.href)}
               className={cn(
