@@ -48,13 +48,6 @@ function normalizePlatform(body: Record<string, unknown>) {
 
 export async function POST(request: NextRequest) {
   try {
-    // Auth via secret header
-    const secret = request.headers.get("x-webhook-secret");
-    const expected = process.env.WEBHOOK_SECRET;
-    if (!expected || secret !== expected) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     // Company from env (webhook doesn't have user session)
     const companyId = process.env.WHATSAPP_COMPANY_ID;
     if (!companyId) {
