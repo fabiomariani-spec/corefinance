@@ -647,23 +647,16 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                               <span className="text-xs text-zinc-400">Sem prazo</span>
                             </label>
                           </div>
-                          <Select
+                          <Input
+                            type="number"
+                            min="1"
+                            max="600"
+                            placeholder="12"
                             value={recurringMonths}
-                            onValueChange={setRecurringMonths}
+                            onChange={(e) => setRecurringMonths(e.target.value)}
                             disabled={openEnded}
-                          >
-                            <SelectTrigger className={openEnded ? "opacity-40" : ""}>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="3">3 meses</SelectItem>
-                              <SelectItem value="6">6 meses</SelectItem>
-                              <SelectItem value="12">12 meses</SelectItem>
-                              <SelectItem value="24">24 meses</SelectItem>
-                              <SelectItem value="36">36 meses</SelectItem>
-                              <SelectItem value="60">60 meses</SelectItem>
-                            </SelectContent>
-                          </Select>
+                            className={`text-center ${openEnded ? "opacity-40" : ""}`}
+                          />
                           <p className="text-xs text-zinc-500">
                             {openEnded
                               ? <span className="text-violet-400 font-medium">Sem prazo definido — cancele manualmente quando quiser</span>
