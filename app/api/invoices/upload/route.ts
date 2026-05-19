@@ -3,7 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { getCompanyId } from "@/lib/auth";
 import { extractInvoiceFromFile } from "@/lib/claude";
 
-export const maxDuration = 120;
+// Netlify Pro permite até 300s pra funções síncronas via maxDuration.
+// Faturas grandes (C6 com 34 páginas) podem demorar 80-100s no Opus 4.7.
+export const maxDuration = 240;
 
 /**
  * Upload fatura: pode demorar 30-60s para PDFs grandes.

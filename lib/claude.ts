@@ -152,9 +152,9 @@ export async function extractInvoiceFromFile(
   return extractInvoiceFromImage(fileBase64, real as "image/jpeg" | "image/png" | "image/webp");
 }
 
-// Pages per parallel call. 4 pages per chunk with Haiku 4.5 finishes in <22s
-// for a 32-page invoice (tested locally), staying under Netlify's 30s proxy
-// inactivity timeout even without keep-alive.
+// Pages per parallel call. 4 páginas por chunk com Opus 4.7 finishes em
+// ~80-90s pra fatura de 34 páginas (testado offline). Precisa maxDuration
+// no route.ts maior que isso (atualmente 240s na route /api/invoices/upload).
 const PAGES_PER_CHUNK = 4;
 
 // Extract text page-by-page so we can chunk logically.
