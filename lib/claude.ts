@@ -218,7 +218,8 @@ async function extractInvoiceFromImage(
   return parseExtractionResponse(rawText);
 }
 
-async function extractInvoiceFromPdfVision(pdfBase64: string): Promise<InvoiceExtractionResult> {
+// Single-chunk vision call: manda 1 PDF (potencialmente fatiado) pro Opus.
+async function extractInvoiceFromPdfVisionSingle(pdfBase64: string): Promise<InvoiceExtractionResult> {
   const pdfContent = [
     {
       type: "document" as const,
@@ -248,6 +249,42 @@ async function extractInvoiceFromPdfVision(pdfBase64: string): Promise<InvoiceEx
     .join("");
 
   return parseExtractionResponse(rawText);
+}
+
+// Fatura escaneada / sem texto embedido: fatia o PDF em chunks de PAGES_PER_CHUNK
+// e processa em paralelo, mesmo padrão do path de texto. Necessário pra faturas
+// grandes (30+ páginas) que ultrapassariam os 32k tokens de output do Opus.
+async function extractInvoiceFromPdfVision(pdfBase64: string): Promise<InvoiceExtractionResult> {
+  const { PDFDocument } = await import("pdf-lib");
+  const srcBytes = Buffer.from(pdfBase64, "base64");
+  const srcDoc = await PDFDocument.load(srcBytes, { ignoreEncryption: true });
+  const totalPages = srcDoc.getPageCount();
+
+  if (totalPages <= PAGES_PER_CHUNK) {
+    return extractInvoiceFromPdfVisionSingle(pdfBase64);
+  }
+
+  const chunks: string[] = [];
+  for (let start = 0; start < totalPages; start += PAGES_PER_CHUNK) {
+    const end = Math.min(start + PAGES_PER_CHUNK, totalPages);
+    const subDoc = await PDFDocument.create();
+    const pageIndices = Array.from({ length: end - start }, (_, i) => start + i);
+    const pages = await subDoc.copyPages(srcDoc, pageIndices);
+    pages.forEach((p) => subDoc.addPage(p));
+    const chunkBytes = await subDoc.save();
+    chunks.push(Buffer.from(chunkBytes).toString("base64"));
+  }
+
+  const results = await Promise.all(chunks.map(extractInvoiceFromPdfVisionSingle));
+
+  return {
+    items: results.flatMap((r) => r.items),
+    totalAmount: results.find((r) => r.totalAmount)?.totalAmount ?? 0,
+    referenceMonth: results.find((r) => r.referenceMonth)?.referenceMonth ?? null,
+    dueDate: results.find((r) => r.dueDate)?.dueDate ?? null,
+    cardLastFour: results.find((r) => r.cardLastFour)?.cardLastFour ?? null,
+    rawText: results.map((r) => r.rawText).join("\n---\n"),
+  };
 }
 
 // Recover truncated JSON: balances unclosed strings, arrays, objects, and dangling commas.
