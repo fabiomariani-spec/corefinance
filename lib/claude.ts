@@ -169,8 +169,8 @@ async function extractInvoiceFromPages(pages: string[]): Promise<InvoiceExtracti
 async function callClaudeWithText(text: string): Promise<InvoiceExtractionResult> {
   const message = await retryWithBackoff(async () => {
     const stream = client.messages.stream({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 8192,
+      model: "claude-opus-4-7",
+      max_tokens: 16000,
       messages: [
         {
           role: "user",
@@ -195,7 +195,7 @@ async function extractInvoiceFromImage(
 ): Promise<InvoiceExtractionResult> {
   const message = await retryWithBackoff(async () => {
     const stream = client.messages.stream({
-      model: "claude-sonnet-4-6",
+      model: "claude-opus-4-7",
       max_tokens: 32000,
       messages: [
         {
@@ -229,7 +229,7 @@ async function extractInvoiceFromPdfVision(pdfBase64: string): Promise<InvoiceEx
 
   const message = await retryWithBackoff(async () => {
     const stream = client.beta.messages.stream({
-      model: "claude-sonnet-4-6",
+      model: "claude-opus-4-7",
       max_tokens: 32000,
       betas: ["pdfs-2024-09-25"],
       messages: [
