@@ -14,6 +14,9 @@ export interface ExtractedInvoiceItem {
   isCredit: boolean;   // true for estornos, cashback, devoluções
   establishment: string | null;
   installmentInfo: string | null;
+  // true se o item soma no totalAmount da fatura deste mês.
+  // false = parcela futura, saldo de período anterior, linha informativa.
+  chargedThisMonth: boolean;
   suggestedCategory: string | null;
 }
 
@@ -35,6 +38,7 @@ Extraia TODOS os lançamentos da fatura. Campos por item:
 - isCredit: true se for estorno/crédito/devolução/cashback/reembolso, false para compras normais
 - establishment: nome do estabelecimento ou null
 - installmentInfo: parcela ex "2/12" ou null
+- chargedThisMonth: true se este lançamento soma no totalAmount da fatura deste mês; false se for parcela FUTURA listada apenas pra contexto, saldo de período anterior, ou linha informativa. Use a regra: a soma dos amounts com chargedThisMonth=true tem que bater (com tolerância de centavos) com o totalAmount global. Compras à vista do período: true. Parcela do mês corrente de uma compra parcelada: true. Parcelas dos meses seguintes da mesma compra: false.
 - suggestedCategory: Alimentação|Transporte|Supermercado|Farmácia|Combustível|Streaming|Software|Restaurante|Hotel|Viagem|Vestuário|Saúde|Educação|Lazer|Serviços|Outros
 
 Campos globais: totalAmount (valor líquido total da fatura, exatamente como impresso), referenceMonth (YYYY-MM), dueDate (YYYY-MM-DD), cardLastFour.

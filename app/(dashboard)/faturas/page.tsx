@@ -36,6 +36,7 @@ interface ExtractedItem {
   isCredit: boolean;
   establishment: string | null;
   installmentInfo: string | null;
+  chargedThisMonth: boolean;
   suggestedCategory: string | null;
   categoryId: string | null;
   departmentId: string | null;
@@ -148,7 +149,10 @@ export default function FaturasPage() {
       if (data.error) throw new Error(data.error);
 
       setResult(data);
-      setItems(data.items.map((item) => ({ ...item, include: true })));
+      // Defaults: só inclui no import os lançamentos que somam no total
+      // deste mês. Parcelas futuras / linhas informativas ficam visíveis mas
+      // desmarcadas. Fallback `?? true` mantém compat com extrator antigo.
+      setItems(data.items.map((item) => ({ ...item, include: item.chargedThisMonth ?? true })));
       // Pré-preenche vencimento com o que a IA extraiu (formato YYYY-MM-DD pro <input type="date">)
       if (data.dueDate) {
         const d = data.dueDate.includes("/")
@@ -225,7 +229,11 @@ export default function FaturasPage() {
   const includedTotal = items.filter((i) => i.include).reduce((s, i) => s + i.amount, 0);
   const includedCredits = items.filter((i) => i.include && i.amount < 0).reduce((s, i) => s + i.amount, 0);
   const reconciliationDiff = result ? Math.abs(includedTotal - result.totalAmount) : 0;
-  const hasReconciliationIssue = result && reconciliationDiff > 0.10;
+  // Mesmo com chargedThisMonth filtrando, pode sobrar uns centavos de OCR.
+  // Tolerância: 0.5% do total ou R$ 1, o que for maior.
+  const reconciliationTolerance = result ? Math.max(1, result.totalAmount * 0.005) : 0.10;
+  const hasReconciliationIssue = result && reconciliationDiff > reconciliationTolerance;
+  const futureItemsCount = items.filter((i) => !i.chargedThisMonth).length;
 
   // Agrupa items por estabelecimento (merchantKey). Cada grupo guarda os
   // índices originais do array `items` pra preservar update/toggle.
@@ -539,6 +547,9 @@ export default function FaturasPage() {
               <Sparkles className="w-3.5 h-3.5 mt-0.5 shrink-0" />
               <span>
                 Revise os lançamentos abaixo. Itens em <span className="text-emerald-400 font-semibold">verde</span> são créditos/estornos (reduzem o total). Ajuste categorias e desmarque os que não devem ser importados.
+                {futureItemsCount > 0 && (
+                  <> <strong className="text-zinc-200">{futureItemsCount}</strong> {futureItemsCount === 1 ? "lançamento foi detectado" : "lançamentos foram detectados"} como parcela futura ou fora deste mês — vêm desmarcados por padrão.</>
+                )}
               </span>
             </div>
 

@@ -12,7 +12,7 @@ export const GET = withAuth(async ({ companyId }) => {
   const txByAccount = await prisma.transaction.groupBy({
     by: ["accountId", "type"],
     where: {
-      accountId: { in: accounts.map((a) => a.id) },
+      accountId: { in: accounts.map((a: { id: string }) => a.id) },
       OR: [
         { type: "INCOME", status: "RECEIVED" },
         { type: "EXPENSE", status: "PAID" },
