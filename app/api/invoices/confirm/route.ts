@@ -23,6 +23,8 @@ export const POST = withAuth(async ({ companyId, req }) => {
     paymentDate,
     totalAmount,
     items,
+    summaryOnly,
+    summaryCategoryId,
   }: {
     creditCardId: string;
     referenceMonth: string;
@@ -30,6 +32,8 @@ export const POST = withAuth(async ({ companyId, req }) => {
     paymentDate: string | null;
     totalAmount: number;
     items: ConfirmItem[];
+    summaryOnly?: boolean;
+    summaryCategoryId?: string | null;
   } = body;
 
   // Parse reference month YYYY-MM → YYYYMM
@@ -59,6 +63,38 @@ export const POST = withAuth(async ({ companyId, req }) => {
       },
     });
     invoiceId = invoice.id;
+  }
+
+  // Modo "Importar só o total": cria UMA transação consolidada, ignora itens.
+  if (summaryOnly) {
+    const card = await prisma.creditCard.findFirst({
+      where: { id: creditCardId, companyId },
+      select: { name: true },
+    });
+    const isPaid = !!paymentDate;
+    const tx = await prisma.transaction.create({
+      data: {
+        companyId,
+        description: `Fatura ${card?.name ?? "cartão"} ${referenceMonth}`,
+        amount: totalAmount,
+        type: "EXPENSE",
+        status: isPaid ? "PAID" : "PENDING",
+        categoryId: summaryCategoryId || null,
+        creditCardId,
+        competenceDate: new Date(referenceMonth + "-01"),
+        dueDate: dueDate ? new Date(dueDate) : new Date(),
+        paymentDate: paymentDate ? parseBRDate(paymentDate) : null,
+        paymentMethod: "CREDIT_CARD",
+        importedFromInvoiceId: invoiceId,
+        importSource: "invoice_import_summary",
+      },
+    });
+    return {
+      invoiceId,
+      transactionsCreated: 1,
+      skippedDuplicates: 0,
+      summaryTransactionId: tx.id,
+    };
   }
 
   // Create transactions for included items

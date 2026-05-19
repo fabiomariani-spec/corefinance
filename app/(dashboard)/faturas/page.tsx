@@ -149,10 +149,19 @@ export default function FaturasPage() {
       if (data.error) throw new Error(data.error);
 
       setResult(data);
-      // Defaults: só inclui no import os lançamentos que somam no total
-      // deste mês. Parcelas futuras / linhas informativas ficam visíveis mas
-      // desmarcadas. Fallback `?? true` mantém compat com extrator antigo.
-      setItems(data.items.map((item) => ({ ...item, include: item.chargedThisMonth ?? true })));
+      // Pré-marca itens chargedThisMonth=true. Se a IA visivelmente errou
+      // (soma dos marcados divergir >5% do total), desmarca tudo — sinal
+      // pro usuário usar "Importar só o total" ou revisar manualmente.
+      const aiSum = data.items
+        .filter((it) => it.chargedThisMonth ?? true)
+        .reduce((s, it) => s + it.amount, 0);
+      const aiFailed = Math.abs(aiSum - data.totalAmount) > data.totalAmount * 0.05;
+      setItems(
+        data.items.map((item) => ({
+          ...item,
+          include: aiFailed ? false : (item.chargedThisMonth ?? true),
+        }))
+      );
       // Pré-preenche vencimento com o que a IA extraiu (formato YYYY-MM-DD pro <input type="date">)
       if (data.dueDate) {
         const d = data.dueDate.includes("/")
@@ -170,7 +179,7 @@ export default function FaturasPage() {
     }
   }
 
-  async function handleConfirm() {
+  async function handleConfirm(summaryOnly = false) {
     if (!result) return;
     setConfirming(true);
 
@@ -183,7 +192,8 @@ export default function FaturasPage() {
         dueDate: editDueDate || result.dueDate,
         paymentDate: editPaymentDate || null,
         totalAmount: result.totalAmount,
-        items,
+        items: summaryOnly ? [] : items,
+        summaryOnly,
       }),
     });
 
@@ -234,6 +244,13 @@ export default function FaturasPage() {
   const reconciliationTolerance = result ? Math.max(1, result.totalAmount * 0.005) : 0.10;
   const hasReconciliationIssue = result && reconciliationDiff > reconciliationTolerance;
   const futureItemsCount = items.filter((i) => !i.chargedThisMonth).length;
+  // IA "falhou" = trouxe muitos itens mas a soma dos marcados diverge muito do total.
+  // Quando isso acontece, todos os itens vêm desmarcados por padrão (ver handleProcess).
+  const aiSelectedSum = result
+    ? items.filter((i) => i.chargedThisMonth).reduce((s, i) => s + i.amount, 0)
+    : 0;
+  const aiExtractionFailed = !!result && items.length > 0
+    && Math.abs(aiSelectedSum - result.totalAmount) > result.totalAmount * 0.05;
 
   // Agrupa items por estabelecimento (merchantKey). Cada grupo guarda os
   // índices originais do array `items` pra preservar update/toggle.
@@ -553,8 +570,18 @@ export default function FaturasPage() {
               </span>
             </div>
 
+            {/* AI extraction failure banner — divergência muito grande */}
+            {aiExtractionFailed && (
+              <div className="flex items-start gap-2 p-3 bg-rose-950/40 border border-rose-900/50 rounded-lg text-xs text-rose-200">
+                <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-rose-400" />
+                <span>
+                  <strong>Não conseguimos identificar automaticamente quais lançamentos pertencem a este mês.</strong> Em faturas grandes com muitos parcelamentos, a IA às vezes confunde as seções. <strong>Os {items.length} itens vieram desmarcados</strong> — você pode (a) marcar manualmente os que pertencem a esta fatura, ou (b) clicar em <strong className="text-rose-100">"Importar só o total"</strong> abaixo pra criar um único lançamento de {formatCurrency(result!.totalAmount)}.
+                </span>
+              </div>
+            )}
+
             {/* Reconciliation banner */}
-            {hasReconciliationIssue && (
+            {!aiExtractionFailed && hasReconciliationIssue && (
               <div className="flex items-start gap-2 p-3 bg-amber-950/40 border border-amber-900/50 rounded-lg text-xs text-amber-300">
                 <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-400" />
                 <span>
@@ -868,17 +895,27 @@ export default function FaturasPage() {
             </div>
 
             {/* Actions */}
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
               <Button variant="outline" onClick={() => setStep("upload")}>
                 Voltar
               </Button>
-              <Button onClick={handleConfirm} disabled={confirming || includedCount === 0}>
-                {confirming ? (
-                  <><Loader2 className="w-4 h-4 animate-spin" /> Importando...</>
-                ) : (
-                  <><CheckCircle className="w-4 h-4" /> Confirmar Importação ({includedCount} lançamentos)</>
-                )}
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => handleConfirm(true)}
+                  disabled={confirming || !result}
+                  title="Cria apenas 1 lançamento com o total da fatura, ignora os itens detalhados"
+                >
+                  Importar só o total ({formatCurrency(result?.totalAmount ?? 0)})
+                </Button>
+                <Button onClick={() => handleConfirm(false)} disabled={confirming || includedCount === 0}>
+                  {confirming ? (
+                    <><Loader2 className="w-4 h-4 animate-spin" /> Importando...</>
+                  ) : (
+                    <><CheckCircle className="w-4 h-4" /> Confirmar Importação ({includedCount} lançamentos)</>
+                  )}
+                </Button>
+              </div>
             </div>
           </div>
         )}
