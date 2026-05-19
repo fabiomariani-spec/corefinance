@@ -14,8 +14,11 @@ export interface ExtractedInvoiceItem {
   isCredit: boolean;   // true for estornos, cashback, devoluções
   establishment: string | null;
   installmentInfo: string | null;
-  // true se o item soma no totalAmount da fatura deste mês.
-  // false = parcela futura, saldo de período anterior, linha informativa.
+  // Header da seção onde o item aparece na fatura, literalmente como impresso.
+  // Ex: "Lançamentos do período", "Próximas faturas", "Compras parceladas em aberto",
+  // "Pagamentos efetuados", "Encargos", "Estornos e créditos". null se a IA não conseguiu.
+  section: string | null;
+  // Derived no servidor a partir do section. true = entra no total deste mês.
   chargedThisMonth: boolean;
   suggestedCategory: string | null;
 }
@@ -31,29 +34,48 @@ export interface InvoiceExtractionResult {
 
 const EXTRACTION_PROMPT = `Você é um especialista em faturas de cartão de crédito brasileiro.
 
-REGRA CRÍTICA — SEÇÕES DA FATURA:
-Faturas brasileiras (Itaú, Bradesco, Santander, Nubank, etc.) costumam ter MÚLTIPLAS seções. Você precisa identificar cada item pela seção em que aparece:
-- "Lançamentos do período" / "Novas compras" / "Compras nacionais" / "Compras internacionais" / "Pagamentos" / "Encargos" / "Estornos e Créditos" → estes ENTRAM no total deste mês → chargedThisMonth=TRUE
-- "Próximas faturas" / "Parcelamentos em aberto" / "Compras parceladas — próximas parcelas" / "Histórico de pagamentos" / "Lançamentos futuros" → NÃO entram no total deste mês → chargedThisMonth=FALSE
-- Quando uma compra parcelada aparece com "X/Y", apenas UMA parcela (a deste mês) está na seção atual; as demais estão em "próximas faturas". Marque chargedThisMonth=TRUE só pra parcela do mês corrente.
+⚠️ A REGRA MAIS IMPORTANTE — IDENTIFIQUE A SEÇÃO DE CADA ITEM:
 
-VALIDAÇÃO OBRIGATÓRIA: antes de retornar, some os amounts de TODOS os itens com chargedThisMonth=true. Esse valor TEM que ficar a ≤1% do totalAmount. Se não bater, revise a marcação — provavelmente você incluiu itens de "próximas faturas" ou esqueceu encargos/créditos do mês.
+Toda fatura BR tem várias SEÇÕES com cabeçalhos. Você DEVE registrar em qual seção cada item aparece. Esse é o campo \`section\` no JSON — copie LITERALMENTE o texto do cabeçalho da seção (ex: "Lançamentos do período", "Próximas faturas", etc).
 
-Extraia TODOS os lançamentos da fatura. Campos por item:
-- date: "YYYY-MM-DD"
-- description: descrição da compra (texto curto)
-- amount: valor decimal em reais. POSITIVO para compras/despesas. NEGATIVO para estornos, créditos, cashback, devoluções e reembolsos.
-- isCredit: true se for estorno/crédito/devolução/cashback/reembolso, false para compras normais
+EXEMPLOS REAIS DE CABEÇALHOS DE SEÇÃO (use o que estiver na fatura):
+
+ITAÚ: "Lançamentos no período - Cartão final XXXX" | "Lançamentos no período - Internacional" | "Compras parceladas - próximas faturas" | "Encargos do período" | "Créditos" | "Pagamentos efetuados"
+
+BRADESCO: "Lançamentos do período" | "Compras parceladas em aberto" | "Pagamento(s) efetuado(s)" | "Encargos" | "Próximas parcelas"
+
+C6 BANK: "Lançamentos" | "Pagamentos" | "Próximas faturas" | "Compras parceladas em aberto" | "Cashback" | "Encargos contratuais"
+
+NUBANK: "Transações do período" | "Compras parceladas - próximas faturas" | "Pagamento" | "IOF" | "Estorno"
+
+SANTANDER: "Lançamentos do período" | "Lançamentos parcelados em aberto" | "Pagamentos" | "Encargos"
+
+GENÉRICOS (qualquer banco): "Resumo da fatura", "Sumário", "Detalhamento por cartão adicional"
+
+REGRA DE NEGÓCIO — O QUE ENTRA NO TOTAL DESTE MÊS:
+✅ ENTRA: seções tipo "Lançamentos do período" / "Transações" / "Compras nacionais/internacionais" / "Encargos" / "Estornos/Créditos / Cashback do período" / "IOF" / "Anuidade"
+❌ NÃO ENTRA: "Próximas faturas" / "Compras parceladas em aberto" (são as parcelas FUTURAS que vão pra próximas faturas — não conta neste mês) / "Pagamento efetuado" da fatura anterior (NÃO é crédito, é só registro)
+
+Pra cada item:
+- date: "YYYY-MM-DD" da transação
+- description: texto curto da compra
+- amount: positivo pra despesas, NEGATIVO pra créditos/estornos/cashback/devoluções
+- isCredit: true se for estorno/cashback/devolução, false caso contrário
 - establishment: nome do estabelecimento ou null
-- installmentInfo: parcela ex "2/12" ou null
-- chargedThisMonth: true se este lançamento soma no totalAmount da fatura deste mês; false se for parcela FUTURA listada apenas pra contexto, saldo de período anterior, ou linha informativa. Use a regra: a soma dos amounts com chargedThisMonth=true tem que bater (com tolerância de centavos) com o totalAmount global. Compras à vista do período: true. Parcela do mês corrente de uma compra parcelada: true. Parcelas dos meses seguintes da mesma compra: false.
+- installmentInfo: "X/Y" pra parcelado, null caso contrário
+- section: COPIE EXATAMENTE o cabeçalho da seção (string), ou null se não conseguir identificar
+- chargedThisMonth: derive da seção. true se a seção entra no total. false se for "próximas faturas" / "parceladas em aberto" / "pagamento efetuado"
 - suggestedCategory: Alimentação|Transporte|Supermercado|Farmácia|Combustível|Streaming|Software|Restaurante|Hotel|Viagem|Vestuário|Saúde|Educação|Lazer|Serviços|Outros
 
-Campos globais: totalAmount (valor líquido total da fatura, exatamente como impresso), referenceMonth (YYYY-MM), dueDate (YYYY-MM-DD), cardLastFour.
+⚠️ ARMADILHA COMUM: na seção "Compras parceladas em aberto" os bancos costumam listar TODAS as parcelas restantes com o valor da PARCELA (não do saldo total). Mesmo que pareça um lançamento normal, se está nessa seção → chargedThisMonth=FALSE.
 
-IMPORTANTE: estornos aparecem com palavras como "Estorno", "Crédito", "Devolução", "Cashback", "Reembolso" ou valores com sinal negativo na fatura — extraia o amount como NEGATIVO.
+⚠️ ARMADILHA #2: "Pagamento efetuado" / "PAGTO POR DEB EM C/C" — é o pagamento da fatura anterior. NÃO é crédito do mês. Coloque section="Pagamentos efetuados" e chargedThisMonth=FALSE.
 
-RESPONDA SOMENTE com JSON minificado (sem espaços nem quebras de linha). Sem texto antes ou depois.`;
+VALIDAÇÃO ANTES DE RETORNAR: some amounts dos itens com chargedThisMonth=true. Deve ficar dentro de 2% do totalAmount global. Se errar muito, você provavelmente marcou parcelas futuras como deste mês — REVISE.
+
+Campos globais: totalAmount (valor "Total a pagar" exato), referenceMonth (YYYY-MM), dueDate (YYYY-MM-DD), cardLastFour.
+
+RESPONDA SOMENTE com JSON minificado, sem espaços/quebras, sem texto fora.`;
 
 async function retryWithBackoff<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   for (let i = 0; i < attempts; i++) {
@@ -105,7 +127,20 @@ export async function extractInvoiceFromFile(
       // Heuristic: real invoices have >200 chars and at least one digit.
       // If not, it's probably a scanned PDF → use vision.
       if (total.length >= 200 && /\d/.test(total)) {
-        return extractInvoiceFromPages(pages);
+        const textResult = await extractInvoiceFromPages(pages);
+        // Validação: alguns PDFs (notavelmente C6 Bank) têm texto onde o ID
+        // do estabelecimento e o valor numérico vêm concatenados sem espaço,
+        // o que faz a IA parsear valores absurdos (ex: R$ 213k em vez de R$ 13k).
+        // Sinal: soma dos itens deste mês > 2x o total impresso da fatura.
+        // Quando isso acontece, refaz tudo via vision (Opus olha o layout 2D).
+        const sumCharged = textResult.items
+          .filter((it) => it.chargedThisMonth)
+          .reduce((s, it) => s + it.amount, 0);
+        const parsingLikelyBroken =
+          textResult.totalAmount > 0 &&
+          Math.abs(sumCharged) > textResult.totalAmount * 2;
+        if (!parsingLikelyBroken) return textResult;
+        // text path ambíguo → cai pra vision
       }
     } catch {
       // pdf-parse can throw on encrypted/corrupt PDFs — fall through to vision
@@ -313,6 +348,44 @@ function recoverTruncatedJson(text: string): string | null {
   return s;
 }
 
+// Descrições que SEMPRE são pagamento de fatura (não importa em que seção a IA colocou).
+// Bancos costumam misturar pagamentos no meio dos lançamentos quando a fatura tem
+// muitas páginas, e a IA chunked perde o contexto da seção. Por isso forçamos via
+// pattern de descrição.
+const PAYMENT_DESCRIPTION_PATTERNS = [
+  /inclus[aã]o de pagamento/i,
+  /^pagto\b/i,
+  /pagamento (em|de|por|recebido|efetuado|antecipado|parcial|total)/i,
+  /pagamento eletr[oô]nico/i,
+  /pagamento de fatura/i,
+  /pagamento online/i,
+  /\bpagto\.? por deb/i,  // PAGTO. POR DEB EM C/C (Bradesco)
+];
+
+function isPaymentDescription(description: string): boolean {
+  return PAYMENT_DESCRIPTION_PATTERNS.some((re) => re.test(description));
+}
+
+// Derive chargedThisMonth from section header. Patterns que indicam que o item
+// NÃO entra no total deste mês: parcelas futuras, pagamentos da fatura anterior.
+// Tudo o resto entra (lançamentos do período, encargos, créditos, IOF, etc).
+function deriveChargedThisMonth(section: string | null): boolean {
+  if (!section) return true; // sem info → otimista, deixa user revisar
+  const s = section.toLowerCase();
+  const futurePatterns = [
+    "próxim",     // próximas faturas / próximas parcelas
+    "proxim",
+    "parcela",    // compras parceladas em aberto / parceladas em aberto
+    "em aberto",
+    "pagamento",  // "pagamento efetuado" / "pagamentos efetuados" / "pagto"
+    "pagto",
+    "futur",
+    "histórico",
+    "historico",
+  ];
+  return !futurePatterns.some((p) => s.includes(p));
+}
+
 function parseExtractionResponse(rawText: string): InvoiceExtractionResult {
   let parsed: Record<string, unknown> | null = null;
 
@@ -373,8 +446,28 @@ function parseExtractionResponse(rawText: string): InvoiceExtractionResult {
     dueDate?: string | null;
     cardLastFour?: string | null;
   };
+  // Reescreve section/chargedThisMonth de forma determinística:
+  // 1. Itens com descrição de pagamento → forçados pra "Pagamentos efetuados" com amount negativo
+  //    (a IA erra muito isso em chunking — vê "Inclusao de Pagamento" sem o header da seção)
+  // 2. chargedThisMonth deriva da section (não confiamos no flag da IA)
+  const items = (p.items ?? []).map((it) => {
+    let section = it.section ?? null;
+    let amount = it.amount;
+    if (isPaymentDescription(it.description)) {
+      section = "Pagamentos efetuados";
+      // Pagamento é sempre negativo (abate do total)
+      if (amount > 0) amount = -amount;
+    }
+    return {
+      ...it,
+      amount,
+      section,
+      chargedThisMonth: deriveChargedThisMonth(section),
+    };
+  });
+
   return {
-    items: p.items ?? [],
+    items,
     totalAmount: p.totalAmount ?? 0,
     referenceMonth: p.referenceMonth ?? null,
     dueDate: p.dueDate ?? null,
