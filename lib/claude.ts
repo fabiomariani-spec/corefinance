@@ -158,6 +158,10 @@ export async function extractInvoiceFromFile(
 const PAGES_PER_CHUNK = 4;
 
 // Extract text page-by-page so we can chunk logically.
+// disableCombineTextItems: true → mantém items separados em vez de concatenar.
+// Crítico pra faturas tipo C6 onde IDs e valores ficariam grudados (ex:
+// "FACEBK *ECS7XKVPJ23.274,34" vira ambíguo entre PJ2+3.274 e PJ+23.274).
+// Com items separados, juntamos com "|" pra preservar o boundary.
 async function extractPdfPages(buf: Buffer): Promise<string[]> {
   const pages: string[] = [];
   await pdfParse(buf, {
@@ -166,9 +170,11 @@ async function extractPdfPages(buf: Buffer): Promise<string[]> {
     }) => {
       const content = await pageData.getTextContent({
         normalizeWhitespace: false,
-        disableCombineTextItems: false,
+        disableCombineTextItems: true,
       });
-      const text = content.items.map((it) => it.str + (it.hasEOL ? "\n" : "")).join("");
+      const text = content.items
+        .map((it) => it.str + (it.hasEOL ? "\n" : ""))
+        .join("|");
       pages.push(text);
       return text;
     },
@@ -352,18 +358,34 @@ function recoverTruncatedJson(text: string): string | null {
 // Bancos costumam misturar pagamentos no meio dos lançamentos quando a fatura tem
 // muitas páginas, e a IA chunked perde o contexto da seção. Por isso forçamos via
 // pattern de descrição.
+// Padrões que indicam pagamento da fatura ANTERIOR (não da atual).
+// Esses NÃO contam no total deste mês — só aparecem como registro.
+// CUIDADO: "pagamento antecipado" é DIFERENTE — é abatimento da fatura
+// atual e DEVE entrar como crédito. Não listar "antecipado" aqui.
 const PAYMENT_DESCRIPTION_PATTERNS = [
   /inclus[aã]o de pagamento/i,
   /^pagto\b/i,
-  /pagamento (em|de|por|recebido|efetuado|antecipado|parcial|total)/i,
+  /pagamento (em|de|por|recebido|efetuado)/i,
   /pagamento eletr[oô]nico/i,
   /pagamento de fatura/i,
   /pagamento online/i,
   /\bpagto\.? por deb/i,  // PAGTO. POR DEB EM C/C (Bradesco)
 ];
 
+// "Pagamento antecipado" / "antecipação de fatura" — abate da fatura ATUAL.
+// Deve ser tratado como crédito do mês (chargedThisMonth=true, amount negativo).
+const PREPAYMENT_DESCRIPTION_PATTERNS = [
+  /pagamento antecipado/i,
+  /antecipa[cç][aã]o de fatura/i,
+  /antecipa[cç][aã]o de pagamento/i,
+];
+
 function isPaymentDescription(description: string): boolean {
   return PAYMENT_DESCRIPTION_PATTERNS.some((re) => re.test(description));
+}
+
+function isPrepaymentDescription(description: string): boolean {
+  return PREPAYMENT_DESCRIPTION_PATTERNS.some((re) => re.test(description));
 }
 
 // Derive chargedThisMonth from section header. Patterns que indicam que o item
@@ -447,15 +469,19 @@ function parseExtractionResponse(rawText: string): InvoiceExtractionResult {
     cardLastFour?: string | null;
   };
   // Reescreve section/chargedThisMonth de forma determinística:
-  // 1. Itens com descrição de pagamento → forçados pra "Pagamentos efetuados" com amount negativo
-  //    (a IA erra muito isso em chunking — vê "Inclusao de Pagamento" sem o header da seção)
-  // 2. chargedThisMonth deriva da section (não confiamos no flag da IA)
+  // 1. Pagamento da fatura anterior ("Inclusao de Pagamento", "PAGTO POR DEB") →
+  //    forçado pra "Pagamentos efetuados" + amount negativo (NÃO conta no total)
+  // 2. Pagamento antecipado da fatura atual → "Valores creditados" + amount negativo
+  //    (CONTA no total, como crédito)
+  // 3. chargedThisMonth deriva da section (não confia no flag bruto da IA)
   const items = (p.items ?? []).map((it) => {
     let section = it.section ?? null;
     let amount = it.amount;
-    if (isPaymentDescription(it.description)) {
+    if (isPrepaymentDescription(it.description)) {
+      section = "Valores creditados";
+      if (amount > 0) amount = -amount;
+    } else if (isPaymentDescription(it.description)) {
       section = "Pagamentos efetuados";
-      // Pagamento é sempre negativo (abate do total)
       if (amount > 0) amount = -amount;
     }
     return {
