@@ -36,6 +36,7 @@ interface ExtractedItem {
   isCredit: boolean;
   establishment: string | null;
   installmentInfo: string | null;
+  section: string | null;
   chargedThisMonth: boolean;
   suggestedCategory: string | null;
   categoryId: string | null;
@@ -149,17 +150,12 @@ export default function FaturasPage() {
       if (data.error) throw new Error(data.error);
 
       setResult(data);
-      // Pré-marca itens chargedThisMonth=true. Se a IA visivelmente errou
-      // (soma dos marcados divergir >5% do total), desmarca tudo — sinal
-      // pro usuário usar "Importar só o total" ou revisar manualmente.
-      const aiSum = data.items
-        .filter((it) => it.chargedThisMonth ?? true)
-        .reduce((s, it) => s + it.amount, 0);
-      const aiFailed = Math.abs(aiSum - data.totalAmount) > data.totalAmount * 0.05;
+      // Pré-marca itens chargedThisMonth=true. Section breakdown panel acima
+      // dá controle pro user desmarcar bulk por seção (ex: "Próximas faturas").
       setItems(
         data.items.map((item) => ({
           ...item,
-          include: aiFailed ? false : (item.chargedThisMonth ?? true),
+          include: item.chargedThisMonth ?? true,
         }))
       );
       // Pré-preenche vencimento com o que a IA extraiu (formato YYYY-MM-DD pro <input type="date">)
@@ -244,13 +240,6 @@ export default function FaturasPage() {
   const reconciliationTolerance = result ? Math.max(1, result.totalAmount * 0.005) : 0.10;
   const hasReconciliationIssue = result && reconciliationDiff > reconciliationTolerance;
   const futureItemsCount = items.filter((i) => !i.chargedThisMonth).length;
-  // IA "falhou" = trouxe muitos itens mas a soma dos marcados diverge muito do total.
-  // Quando isso acontece, todos os itens vêm desmarcados por padrão (ver handleProcess).
-  const aiSelectedSum = result
-    ? items.filter((i) => i.chargedThisMonth).reduce((s, i) => s + i.amount, 0)
-    : 0;
-  const aiExtractionFailed = !!result && items.length > 0
-    && Math.abs(aiSelectedSum - result.totalAmount) > result.totalAmount * 0.05;
 
   // Agrupa items por estabelecimento (merchantKey). Cada grupo guarda os
   // índices originais do array `items` pra preservar update/toggle.
@@ -350,6 +339,27 @@ export default function FaturasPage() {
       .sort((a, b) => b.total - a.total);
   })();
   const analysisTotal = analysisGroups.reduce((s, g) => s + g.total, 0);
+
+  // Section breakdown: agrupa itens pela seção que a IA identificou,
+  // mostra status (entra no total deste mês ou não), permite toggle bulk.
+  const sectionGroups = (() => {
+    const map = new Map<string, { name: string; chargedThisMonth: boolean; total: number; count: number; indices: number[] }>();
+    items.forEach((item, idx) => {
+      const key = item.section ?? "Sem seção";
+      if (!map.has(key)) {
+        map.set(key, { name: key, chargedThisMonth: item.chargedThisMonth, total: 0, count: 0, indices: [] });
+      }
+      const g = map.get(key)!;
+      g.total += item.amount;
+      g.count += 1;
+      g.indices.push(idx);
+    });
+    return Array.from(map.values()).sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+  })();
+
+  function toggleSection(indices: number[], turnOn: boolean) {
+    setItems((prev) => prev.map((item, i) => indices.includes(i) ? { ...item, include: turnOn } : item));
+  }
 
   return (
     <>
@@ -570,18 +580,8 @@ export default function FaturasPage() {
               </span>
             </div>
 
-            {/* AI extraction failure banner — divergência muito grande */}
-            {aiExtractionFailed && (
-              <div className="flex items-start gap-2 p-3 bg-rose-950/40 border border-rose-900/50 rounded-lg text-xs text-rose-200">
-                <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-rose-400" />
-                <span>
-                  <strong>Não conseguimos identificar automaticamente quais lançamentos pertencem a este mês.</strong> Em faturas grandes com muitos parcelamentos, a IA às vezes confunde as seções. <strong>Os {items.length} itens vieram desmarcados</strong> — você pode (a) marcar manualmente os que pertencem a esta fatura, ou (b) clicar em <strong className="text-rose-100">"Importar só o total"</strong> abaixo pra criar um único lançamento de {formatCurrency(result!.totalAmount)}.
-                </span>
-              </div>
-            )}
-
             {/* Reconciliation banner */}
-            {!aiExtractionFailed && hasReconciliationIssue && (
+            {hasReconciliationIssue && (
               <div className="flex items-start gap-2 p-3 bg-amber-950/40 border border-amber-900/50 rounded-lg text-xs text-amber-300">
                 <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-400" />
                 <span>
@@ -589,6 +589,46 @@ export default function FaturasPage() {
                   {includedCredits < 0 && ` Inclui ${formatCurrency(Math.abs(includedCredits))} em estornos/créditos.`}
                   {" "}Causas comuns: saldo anterior rotativo incluído no total impresso, parcelas de compras de meses anteriores, encargos/juros, ou ajustes cambiais. Os lançamentos extraídos representam apenas as novas transações do período.
                 </span>
+              </div>
+            )}
+
+            {/* Section breakdown — mostra o que a IA identificou como cada parte da fatura */}
+            {sectionGroups.length > 0 && (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+                <div className="px-4 py-3 border-b border-zinc-800 flex items-center justify-between">
+                  <span className="flex items-center gap-2 text-sm font-semibold text-zinc-100">
+                    <BarChart2 className="w-4 h-4 text-indigo-400" />
+                    Seções identificadas
+                  </span>
+                  <span className="text-xs text-zinc-500">{sectionGroups.length} {sectionGroups.length === 1 ? "seção" : "seções"}</span>
+                </div>
+                <div className="divide-y divide-zinc-800/60">
+                  {sectionGroups.map((g) => {
+                    const allSelected = g.indices.every((i) => items[i]?.include);
+                    const noneSelected = g.indices.every((i) => !items[i]?.include);
+                    return (
+                      <div key={g.name} className="px-4 py-2.5 flex items-center gap-3">
+                        <button
+                          onClick={() => toggleSection(g.indices, !allSelected)}
+                          className={`w-5 h-5 rounded border flex items-center justify-center text-xs ${allSelected ? "bg-indigo-600 border-indigo-600 text-white" : noneSelected ? "border-zinc-600" : "bg-indigo-600/40 border-indigo-600/60 text-white"}`}
+                          title={allSelected ? "Desmarcar todos desta seção" : "Marcar todos desta seção"}
+                        >
+                          {allSelected ? "✓" : !noneSelected ? "—" : ""}
+                        </button>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-zinc-200 truncate">{g.name}</p>
+                          <p className="text-xs text-zinc-500">
+                            {g.count} {g.count === 1 ? "item" : "itens"}
+                            {!g.chargedThisMonth && <span className="ml-2 text-amber-400">não entra no total deste mês</span>}
+                          </p>
+                        </div>
+                        <span className={`text-sm font-medium tabular-nums ${g.total < 0 ? "text-emerald-400" : "text-zinc-200"}`}>
+                          {formatCurrency(g.total)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
 
@@ -895,27 +935,17 @@ export default function FaturasPage() {
             </div>
 
             {/* Actions */}
-            <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center justify-between">
               <Button variant="outline" onClick={() => setStep("upload")}>
                 Voltar
               </Button>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  onClick={() => handleConfirm(true)}
-                  disabled={confirming || !result}
-                  title="Cria apenas 1 lançamento com o total da fatura, ignora os itens detalhados"
-                >
-                  Importar só o total ({formatCurrency(result?.totalAmount ?? 0)})
-                </Button>
-                <Button onClick={() => handleConfirm(false)} disabled={confirming || includedCount === 0}>
-                  {confirming ? (
-                    <><Loader2 className="w-4 h-4 animate-spin" /> Importando...</>
-                  ) : (
-                    <><CheckCircle className="w-4 h-4" /> Confirmar Importação ({includedCount} lançamentos)</>
-                  )}
-                </Button>
-              </div>
+              <Button onClick={() => handleConfirm(false)} disabled={confirming || includedCount === 0}>
+                {confirming ? (
+                  <><Loader2 className="w-4 h-4 animate-spin" /> Importando...</>
+                ) : (
+                  <><CheckCircle className="w-4 h-4" /> Confirmar Importação ({includedCount} lançamentos)</>
+                )}
+              </Button>
             </div>
           </div>
         )}
