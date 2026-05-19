@@ -501,7 +501,7 @@ REGRAS:
   // Agentic loop — max 5 rounds
   for (let round = 0; round < 5; round++) {
     const response = await anthropic.messages.create({
-      model: "claude-opus-4-6",
+      model: "claude-opus-4-7",
       max_tokens: 2048,
       system: systemPrompt,
       tools: FINANCIAL_TOOLS,

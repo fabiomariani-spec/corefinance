@@ -170,7 +170,7 @@ async function callClaudeWithText(text: string): Promise<InvoiceExtractionResult
   const message = await retryWithBackoff(async () => {
     const stream = client.messages.stream({
       model: "claude-opus-4-7",
-      max_tokens: 16000,
+      max_tokens: 32000,
       messages: [
         {
           role: "user",

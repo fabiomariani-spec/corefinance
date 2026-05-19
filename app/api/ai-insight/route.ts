@@ -167,7 +167,7 @@ export async function POST(request: NextRequest) {
     async start(controller) {
       try {
         const stream = client.messages.stream({
-          model: "claude-opus-4-6",
+          model: "claude-opus-4-7",
           max_tokens: 1024,
           messages: [{ role: "user", content: prompt }],
         });
