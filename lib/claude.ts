@@ -31,6 +31,14 @@ export interface InvoiceExtractionResult {
 
 const EXTRACTION_PROMPT = `Você é um especialista em faturas de cartão de crédito brasileiro.
 
+REGRA CRÍTICA — SEÇÕES DA FATURA:
+Faturas brasileiras (Itaú, Bradesco, Santander, Nubank, etc.) costumam ter MÚLTIPLAS seções. Você precisa identificar cada item pela seção em que aparece:
+- "Lançamentos do período" / "Novas compras" / "Compras nacionais" / "Compras internacionais" / "Pagamentos" / "Encargos" / "Estornos e Créditos" → estes ENTRAM no total deste mês → chargedThisMonth=TRUE
+- "Próximas faturas" / "Parcelamentos em aberto" / "Compras parceladas — próximas parcelas" / "Histórico de pagamentos" / "Lançamentos futuros" → NÃO entram no total deste mês → chargedThisMonth=FALSE
+- Quando uma compra parcelada aparece com "X/Y", apenas UMA parcela (a deste mês) está na seção atual; as demais estão em "próximas faturas". Marque chargedThisMonth=TRUE só pra parcela do mês corrente.
+
+VALIDAÇÃO OBRIGATÓRIA: antes de retornar, some os amounts de TODOS os itens com chargedThisMonth=true. Esse valor TEM que ficar a ≤1% do totalAmount. Se não bater, revise a marcação — provavelmente você incluiu itens de "próximas faturas" ou esqueceu encargos/créditos do mês.
+
 Extraia TODOS os lançamentos da fatura. Campos por item:
 - date: "YYYY-MM-DD"
 - description: descrição da compra (texto curto)
