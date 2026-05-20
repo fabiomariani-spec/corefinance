@@ -76,6 +76,7 @@ export default function FaturasPage() {
   const [editDueDate, setEditDueDate] = useState<string>("");
   const [editPaymentDate, setEditPaymentDate] = useState<string>("");
   const [autoCountdown, setAutoCountdown] = useState(false);
+  const [processingElapsedMs, setProcessingElapsedMs] = useState(0);
   const autoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -129,25 +130,38 @@ export default function FaturasPage() {
     formData.append("creditCardId", selectedCard);
 
     try {
-      const res = await fetch("/api/invoices/upload", {
+      // Upload é rápido (<5s) — só dispara processamento async, retorna jobId.
+      const uploadRes = await fetch("/api/invoices/upload", {
         method: "POST",
         body: formData,
       });
-
-      // Keep-alive streaming: the body may start with whitespace (to prevent
-      // CDN inactivity timeout) then contains the JSON payload. JSON.parse
-      // tolerates leading whitespace, so plain res.json() works.
-      const text = await res.text();
-      let data: ExtractionResult & { error?: string };
-      try {
-        data = JSON.parse(text);
-      } catch {
-        if (res.status === 413) throw new Error("Arquivo muito grande pro servidor (limite ~4,5MB no deploy). Tente um PDF/imagem menor.");
-        if (res.status === 504 || res.status === 502) throw new Error("O processamento demorou demais e o servidor cortou. Tente uma imagem JPG/PNG no lugar do PDF, ou um arquivo menor.");
-        throw new Error(`Erro ${res.status}: o servidor não retornou JSON. Verifique os logs do deploy.`);
+      const uploadData = await uploadRes.json();
+      if (!uploadRes.ok || uploadData.error) {
+        throw new Error(uploadData.error || `Erro ${uploadRes.status} no upload`);
       }
+      const jobId = uploadData.jobId as string;
 
-      if (data.error) throw new Error(data.error);
+      // Polling: checa status de 2 em 2s até READY ou ERROR (timeout 10min)
+      const startedAt = Date.now();
+      const TIMEOUT_MS = 10 * 60 * 1000;
+      let data: ExtractionResult & { error?: string };
+      while (true) {
+        await new Promise((r) => setTimeout(r, 2000));
+        if (Date.now() - startedAt > TIMEOUT_MS) {
+          throw new Error("Processamento demorou demais (>10min). Tente novamente.");
+        }
+        const jobRes = await fetch(`/api/invoices/job/${jobId}`);
+        const jobData = await jobRes.json();
+        if (jobData.error) throw new Error(jobData.error);
+        setProcessingElapsedMs(jobData.elapsedMs ?? 0);
+        if (jobData.status === "READY") {
+          data = jobData.result;
+          break;
+        }
+        if (jobData.status === "ERROR") {
+          throw new Error(jobData.error || "Falha na extração");
+        }
+      }
 
       setResult(data);
       // Pré-marca itens chargedThisMonth=true. Section breakdown panel acima
@@ -512,9 +526,11 @@ export default function FaturasPage() {
             <div className="w-16 h-16 rounded-full bg-indigo-600/15 flex items-center justify-center">
               <Loader2 className="w-8 h-8 text-indigo-400 animate-spin" />
             </div>
-            <h3 className="text-lg font-semibold text-zinc-100">Processando fatura...</h3>
+            <h3 className="text-lg font-semibold text-zinc-100">
+              Processando fatura{processingElapsedMs > 0 ? ` · ${Math.round(processingElapsedMs / 1000)}s` : "..."}
+            </h3>
             <p className="text-sm text-zinc-400 text-center max-w-xs">
-              O Claude está lendo e extraindo os lançamentos da sua fatura. Isso pode levar alguns segundos.
+              O Claude está lendo e extraindo os lançamentos da sua fatura. Faturas grandes (30+ páginas) podem levar até 2 minutos.
             </p>
             <div className="flex gap-1.5 mt-2">
               {[0, 1, 2].map((i) => (

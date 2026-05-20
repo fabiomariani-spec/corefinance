@@ -353,6 +353,30 @@ enum InvoiceStatus {
   PROCESSING
 }
 
+// Async job pra processar upload de fatura (Background Function no Netlify
+// permite até 15min vs 26s das funções sync). UI polls /api/invoices/job/[id]
+// até status=READY ou ERROR.
+model InvoiceJob {
+  id           String          @id @default(cuid())
+  companyId    String
+  creditCardId String
+  status       InvoiceJobStatus @default(PROCESSING)
+  result       Json?           // ExtractionResult quando ready
+  errorMessage String?         // mensagem se status=ERROR
+  startedAt    DateTime        @default(now())
+  finishedAt   DateTime?
+  createdAt    DateTime        @default(now())
+
+  @@index([companyId, createdAt])
+  @@map("invoice_jobs")
+}
+
+enum InvoiceJobStatus {
+  PROCESSING
+  READY
+  ERROR
+}
+
 model InvoiceItem {
   id              String            @id @default(cuid())
   invoiceId       String
