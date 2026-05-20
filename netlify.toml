@@ -8,8 +8,3 @@
 
 [[plugins]]
   package = "@netlify/plugin-nextjs"
-
-# Sync function default = 26s. Aumenta pra 240s (Pro permite até 300s).
-# Necessário pra fatura grande (C6 com 34 páginas leva ~80s via Opus 4.7).
-[functions]
-  timeout = 240
