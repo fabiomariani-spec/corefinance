@@ -26,6 +26,14 @@ export default async (req: Request) => {
     console.log("[bg] payload received, jobId=", jobId);
     if (!jobId) return new Response("missing jobId", { status: 400 });
 
+    // Marca "iniciado" no DB pra confirmar que o handler ao menos chegou aqui.
+    // Se o status fica em PROCESSING sem nunca virar "started", o handler nem
+    // foi invocado (provavelmente erro de bundle no module load).
+    await prisma.invoiceJob.update({
+      where: { id: jobId },
+      data: { errorMessage: "extraindo..." },
+    });
+
     // Source of truth: magic bytes, não declared mimetype.
     const buf = Buffer.from(body.base64, "base64");
     const real = detectMediaType(buf) ?? body.mediaType;
