@@ -30,6 +30,39 @@ export const PATCH = withAuth<{ id: string }>(async ({ companyId, params, req })
   });
 }, { errorMsg: "Erro ao atualizar categoria" });
 
+export const PUT = withAuth<{ id: string }>(async ({ companyId, params, req }) => {
+  const body = await req.json();
+
+  const category = await prisma.category.findFirst({
+    where: { id: params.id, companyId },
+  });
+
+  if (!category) {
+    return NextResponse.json({ error: "Categoria não encontrada" }, { status: 404 });
+  }
+
+  if (typeof body.name !== "string" || !body.name.trim()) {
+    return NextResponse.json({ error: "Campo 'name' é obrigatório" }, { status: 400 });
+  }
+  if (typeof body.color !== "string" || !body.color.trim()) {
+    return NextResponse.json({ error: "Campo 'color' é obrigatório" }, { status: 400 });
+  }
+  if (typeof body.isActive !== "boolean") {
+    return NextResponse.json({ error: "Campo 'isActive' é obrigatório" }, { status: 400 });
+  }
+
+  const updateData: Record<string, unknown> = {
+    name: body.name.trim(),
+    color: body.color.trim(),
+    isActive: body.isActive,
+  };
+
+  return prisma.category.update({
+    where: { id: params.id },
+    data: updateData,
+  });
+}, { errorMsg: "Erro ao atualizar categoria" });
+
 export const DELETE = withAuth<{ id: string }>(async ({ companyId, params }) => {
   // Verify ownership
   const category = await prisma.category.findFirst({
