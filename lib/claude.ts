@@ -183,28 +183,82 @@ async function extractPdfPages(buf: Buffer): Promise<string[]> {
 }
 
 async function extractInvoiceFromPages(pages: string[]): Promise<InvoiceExtractionResult> {
+  const allText = pages.join("\n");
+  let merged: InvoiceExtractionResult;
+
   // Single chunk? Just do one call.
   if (pages.length <= PAGES_PER_CHUNK) {
-    return callClaudeWithText(pages.join("\n"));
+    merged = await callClaudeWithText(pages.join("\n"));
+  } else {
+    // Split into N parallel chunks of PAGES_PER_CHUNK pages each.
+    const chunks: string[] = [];
+    for (let i = 0; i < pages.length; i += PAGES_PER_CHUNK) {
+      chunks.push(pages.slice(i, i + PAGES_PER_CHUNK).join("\n"));
+    }
+
+    const results = await Promise.all(chunks.map(callClaudeWithText));
+
+    merged = {
+      items: results.flatMap((r) => r.items),
+      totalAmount: results.find((r) => r.totalAmount)?.totalAmount ?? 0,
+      referenceMonth: results.find((r) => r.referenceMonth)?.referenceMonth ?? null,
+      dueDate: results.find((r) => r.dueDate)?.dueDate ?? null,
+      cardLastFour: results.find((r) => r.cardLastFour)?.cardLastFour ?? null,
+      rawText: results.map((r) => r.rawText).join("\n---\n"),
+    };
   }
 
-  // Split into N parallel chunks of PAGES_PER_CHUNK pages each.
-  const chunks: string[] = [];
-  for (let i = 0; i < pages.length; i += PAGES_PER_CHUNK) {
-    chunks.push(pages.slice(i, i + PAGES_PER_CHUNK).join("\n"));
+  // Reconcile com créditos conhecidos do "Resumo da fatura" — a IA às vezes
+  // perde estes em chunking. Determinístico: scaneia o texto cru do PDF
+  // procurando padrões "(-) <valor><descrição>" e injeta se ausente.
+  const injectedCredits = scanKnownCreditsFromText(allText);
+  for (const credit of injectedCredits) {
+    const dup = merged.items.some(
+      (it) => Math.abs(Math.abs(it.amount) - Math.abs(credit.amount)) < 0.01,
+    );
+    if (!dup) merged.items.push(credit);
   }
 
-  const results = await Promise.all(chunks.map(callClaudeWithText));
+  return merged;
+}
 
-  // Merge: concat items, take first non-null for per-invoice metadata
-  return {
-    items: results.flatMap((r) => r.items),
-    totalAmount: results.find((r) => r.totalAmount)?.totalAmount ?? 0,
-    referenceMonth: results.find((r) => r.referenceMonth)?.referenceMonth ?? null,
-    dueDate: results.find((r) => r.dueDate)?.dueDate ?? null,
-    cardLastFour: results.find((r) => r.cardLastFour)?.cardLastFour ?? null,
-    rawText: results.map((r) => r.rawText).join("\n---\n"),
-  };
+// Detecta créditos / pagamentos antecipados no "Resumo da fatura" via regex,
+// pra garantir que entrem mesmo quando a IA não captura em chunking.
+function scanKnownCreditsFromText(text: string): ExtractedInvoiceItem[] {
+  const credits: ExtractedInvoiceItem[] = [];
+  // Padrões: "(-) 90.105,41Pagamento antecipado" / "(-) 101,69Estornos / Crédito"
+  // Também aceita "Pagamento antecipado(-) 90.105,41" (descrição antes do valor).
+  const patterns = [
+    /\(-\)\s*([\d.]+,\d{2})\s*(Pagamento antecipado|Estornos?\s*\/?\s*Cr[eé]dito[^\n]{0,40}|Valor remanescente[^\n]{0,60}|Cashback[^\n]{0,40})/gi,
+    /(Pagamento antecipado|Estornos?\s*\/?\s*Cr[eé]dito[^\n]{0,40}|Valor remanescente[^\n]{0,60}|Cashback[^\n]{0,40})\s*\(-\)\s*([\d.]+,\d{2})/gi,
+  ];
+  const seen = new Set<string>();
+  for (const re of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const [, a, b] = m;
+      const isValueFirst = /^\d/.test(a);
+      const valStr = (isValueFirst ? a : b).replace(/\./g, "").replace(",", ".");
+      const desc = (isValueFirst ? b : a).trim().slice(0, 80);
+      const amount = -Math.abs(parseFloat(valStr));
+      if (Math.abs(amount) < 0.01) continue; // ignora "0,00"
+      const key = `${desc}:${amount.toFixed(2)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      credits.push({
+        date: new Date().toISOString().slice(0, 10),
+        description: desc,
+        amount,
+        isCredit: true,
+        establishment: null,
+        installmentInfo: null,
+        section: "Valores creditados",
+        chargedThisMonth: true,
+        suggestedCategory: null,
+      });
+    }
+  }
+  return credits;
 }
 
 async function callClaudeWithText(text: string): Promise<InvoiceExtractionResult> {

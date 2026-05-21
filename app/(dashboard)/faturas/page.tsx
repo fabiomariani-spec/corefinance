@@ -623,14 +623,13 @@ export default function FaturasPage() {
               </div>
             </div>
 
-            {/* Reconciliation banner */}
+            {/* Reconciliation banner — só aparece quando a divergência é >1%.
+                Discreto, informativo, sem alarme. */}
             {hasReconciliationIssue && (
-              <div className="flex items-start gap-2 p-3 bg-amber-950/40 border border-amber-900/50 rounded-lg text-xs text-amber-300">
-                <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-400" />
+              <div className="flex items-start gap-2 p-3 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-400">
+                <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-zinc-500" />
                 <span>
-                  <strong>Divergência de {formatCurrency(reconciliationDiff)}:</strong> a soma dos lançamentos selecionados ({formatCurrency(includedTotal)}) difere do total da fatura ({formatCurrency(result!.totalAmount)}).
-                  {includedCredits < 0 && ` Inclui ${formatCurrency(Math.abs(includedCredits))} em estornos/créditos.`}
-                  {" "}Causas comuns: saldo anterior rotativo incluído no total impresso, parcelas de compras de meses anteriores, encargos/juros, ou ajustes cambiais. Os lançamentos extraídos representam apenas as novas transações do período.
+                  Soma dos selecionados {formatCurrency(includedTotal)} · fatura impressa {formatCurrency(result!.totalAmount)} · diferença <strong className="text-zinc-300">{formatCurrency(reconciliationDiff)}</strong>. Pode ser parcela futura, encargo ou crédito não capturado — verifique as seções abaixo.
                 </span>
               </div>
             )}
