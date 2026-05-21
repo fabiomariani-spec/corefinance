@@ -14,6 +14,14 @@ import {
 } from "@/components/ui/select";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Users,
   Plus,
   Copy,
@@ -128,6 +136,14 @@ export default function EquipePage() {
   // Resend invite state
   const [resendingId, setResendingId] = useState<string | null>(null);
 
+  // Add-member-directly modal state
+  const [addOpen, setAddOpen] = useState(false);
+  const [addEmail, setAddEmail] = useState("");
+  const [addRole, setAddRole] = useState("ACCOUNTANT");
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
+  const [addFallbackLink, setAddFallbackLink] = useState<string | null>(null);
+
   const fetchTeam = useCallback(async () => {
     setLoading(true);
     try {
@@ -206,6 +222,61 @@ export default function EquipePage() {
       fetchTeam();
     } finally {
       setResendingId(null);
+    }
+  }
+
+  // ── Add member directly ──────────────────────────────────────────────────
+  function openAddModal() {
+    setAddEmail("");
+    setAddRole("ACCOUNTANT");
+    setAddError(null);
+    setAddFallbackLink(null);
+    setAddOpen(true);
+  }
+
+  async function handleAddMember(e: React.FormEvent) {
+    e.preventDefault();
+    setAdding(true);
+    setAddError(null);
+    setAddFallbackLink(null);
+
+    try {
+      const res = await fetch("/api/team", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: addEmail, role: addRole }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (res.status === 202 && data.token) {
+        // Usuário ainda não existe no Auth — convite gerado
+        const link = `${window.location.origin}/convite/${data.token}`;
+        setAddFallbackLink(link);
+        showToast("Usuário ainda não cadastrado — convite gerado");
+        fetchTeam();
+        return;
+      }
+
+      if (!res.ok) {
+        if (res.status === 409) {
+          setAddError(data.error ?? "Esse usuário já é membro");
+        } else if (res.status === 403) {
+          setAddError(data.error ?? "Você não tem permissão pra adicionar membros");
+        } else if (res.status === 400) {
+          setAddError(data.error ?? "Dados inválidos");
+        } else {
+          setAddError(data.error ?? "Erro ao adicionar membro");
+        }
+        return;
+      }
+
+      showToast("Membro adicionado");
+      setAddOpen(false);
+      fetchTeam();
+    } catch {
+      setAddError("Erro de rede ao adicionar membro");
+    } finally {
+      setAdding(false);
     }
   }
 
@@ -302,9 +373,14 @@ export default function EquipePage() {
               <RefreshCw className="w-4 h-4" />
             </button>
             {isAdmin && (
-              <Button onClick={() => { setInviteOpen(!inviteOpen); setGeneratedLink(null); setInviteError(null); }} size="sm">
-                <Plus className="w-4 h-4" /> Convidar Membro
-              </Button>
+              <>
+                <Button onClick={openAddModal} size="sm" variant="outline">
+                  <UserPlus className="w-4 h-4" /> Adicionar Membro
+                </Button>
+                <Button onClick={() => { setInviteOpen(!inviteOpen); setGeneratedLink(null); setInviteError(null); }} size="sm">
+                  <Plus className="w-4 h-4" /> Convidar Membro
+                </Button>
+              </>
             )}
           </div>
         </div>
@@ -612,6 +688,104 @@ export default function EquipePage() {
           </div>
         </div>
       </div>
+
+      {/* ── Add member directly modal ─────────────────────────────────── */}
+      <Dialog open={addOpen} onOpenChange={(o) => { if (!adding) setAddOpen(o); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <UserPlus className="w-4 h-4 text-indigo-400" />
+              Adicionar membro
+            </DialogTitle>
+            <DialogDescription>
+              Adicione um usuário existente diretamente ao time pelo e-mail. Se ele ainda não
+              tiver conta, geramos um convite automaticamente.
+            </DialogDescription>
+          </DialogHeader>
+
+          {addFallbackLink ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-900/20 border border-amber-700/30">
+                <Mail className="w-4 h-4 text-amber-400 shrink-0" />
+                <p className="text-sm text-amber-200">
+                  Esse e-mail ainda não tem conta. Compartilhe o link de convite abaixo.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 p-3 bg-zinc-800 border border-zinc-700 rounded-lg">
+                <code className="text-xs text-zinc-300 flex-1 truncate">{addFallbackLink}</code>
+                <button
+                  onClick={() => handleCopyLink(addFallbackLink)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-all shrink-0 ${
+                    copied
+                      ? "bg-emerald-600/20 text-emerald-400"
+                      : "bg-zinc-700 text-zinc-300 hover:bg-zinc-600"
+                  }`}
+                >
+                  {copied ? <><Check className="w-3.5 h-3.5" /> Copiado!</> : <><Copy className="w-3.5 h-3.5" /> Copiar</>}
+                </button>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setAddOpen(false)}>
+                  Fechar
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            <form onSubmit={handleAddMember} className="space-y-4">
+              {addError && (
+                <div className="flex items-center gap-2 p-3 rounded-lg bg-red-950/50 border border-red-900 text-red-400 text-sm">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  {addError}
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <Label htmlFor="add-email">E-mail</Label>
+                <Input
+                  id="add-email"
+                  type="email"
+                  placeholder="colaborador@empresa.com"
+                  value={addEmail}
+                  onChange={(e) => setAddEmail(e.target.value)}
+                  required
+                  disabled={adding}
+                  autoFocus
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Permissão</Label>
+                <Select value={addRole} onValueChange={setAddRole} disabled={adding}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ADMIN">
+                      <span className="flex items-center gap-2">
+                        <Crown className="w-3.5 h-3.5 text-indigo-400" />
+                        Administrador — acesso total
+                      </span>
+                    </SelectItem>
+                    <SelectItem value="MANAGER">Gerente — lançamentos + relatórios</SelectItem>
+                    <SelectItem value="ACCOUNTANT">Financeiro — lançamentos</SelectItem>
+                    <SelectItem value="VIEWER">Visualizador — somente leitura</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setAddOpen(false)} disabled={adding}>
+                  Cancelar
+                </Button>
+                <Button type="submit" disabled={adding}>
+                  {adding ? (
+                    <><Loader2 className="w-4 h-4 animate-spin" /> Adicionando...</>
+                  ) : (
+                    <><UserPlus className="w-4 h-4" /> Adicionar</>
+                  )}
+                </Button>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* ── Remove confirm dialog ──────────────────────────────────────── */}
       <ConfirmDialog
