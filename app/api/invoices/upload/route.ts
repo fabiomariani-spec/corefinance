@@ -31,21 +31,23 @@ export async function POST(req: NextRequest): Promise<Response> {
       | "image/webp"
       | "application/pdf";
 
-    // Cria registro de job antes de disparar processamento
+    // Salva o base64 do arquivo direto no job — Background Functions do
+    // Netlify têm limite de body pequeno (~256KB), não dá pra mandar o PDF
+    // todo no POST. A BG fn lê o payload do DB.
     const job = await prisma.invoiceJob.create({
-      data: { companyId, creditCardId, status: "PROCESSING" },
+      data: { companyId, creditCardId, status: "PROCESSING", payload: base64, mediaType },
     });
 
-    // Dispara background function. Aguarda o 202 do Netlify (que vem em <100ms)
-    // porque fire-and-forget em serverless seria descartado quando o lambda
-    // termina. A função BG continua rodando em background depois do 202.
+    // Dispara background function só com o jobId (body minúsculo).
+    // Aguarda o 202 do Netlify (que vem em <100ms) — fire-and-forget seria
+    // descartado quando o lambda do upload termina.
     const baseUrl = process.env.URL || process.env.DEPLOY_URL || req.nextUrl.origin;
     const bgUrl = `${baseUrl}/.netlify/functions/process-invoice-background`;
     try {
       const bgRes = await fetch(bgUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jobId: job.id, companyId, creditCardId, base64, mediaType }),
+        body: JSON.stringify({ jobId: job.id }),
       });
       if (bgRes.status !== 202 && !bgRes.ok) {
         const body = await bgRes.text().catch(() => "");

@@ -8,10 +8,6 @@ import { prisma } from "../../lib/prisma";
 
 interface BackgroundPayload {
   jobId: string;
-  companyId: string;
-  creditCardId: string;
-  base64: string;
-  mediaType: "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
 }
 
 console.log("[bg] module loaded");
@@ -33,29 +29,44 @@ export default async (req: Request) => {
   try {
     const body = (await req.json()) as BackgroundPayload;
     jobId = body.jobId;
-    await markProgress(jobId, "1/4 payload recebido");
+    await markProgress(jobId, "1/4 jobId recebido, lendo payload do DB");
     if (!jobId) return new Response("missing jobId", { status: 400 });
 
-    // Import dinâmico do extractor — isola problemas de bundle/module load.
+    // Lê base64 + metadata do DB (não vem no body por causa do limite de
+    // request da BG fn do Netlify ~256KB)
+    const jobData = await prisma.invoiceJob.findUnique({
+      where: { id: jobId },
+      select: { companyId: true, creditCardId: true, payload: true, mediaType: true },
+    });
+    if (!jobData || !jobData.payload) {
+      await markProgress(jobId, "ERROR: job ou payload não encontrado no DB");
+      return new Response("missing payload", { status: 400 });
+    }
+
     await markProgress(jobId, "2/4 carregando extrator");
     const { extractInvoiceFromFile, detectMediaType } = await import("../../lib/claude");
 
-    const buf = Buffer.from(body.base64, "base64");
-    const real = detectMediaType(buf) ?? body.mediaType;
+    const buf = Buffer.from(jobData.payload, "base64");
+    const real = detectMediaType(buf) ?? (jobData.mediaType as
+      | "image/jpeg" | "image/png" | "image/webp" | "application/pdf"
+      | null) ?? "application/pdf";
 
     await markProgress(jobId, `3/4 extraindo IA (${real}, ${buf.length} bytes)`);
-    const extracted = await extractInvoiceFromFile(body.base64, real);
+    const extracted = await extractInvoiceFromFile(jobData.payload, real);
 
     await markProgress(jobId, `4/4 ${extracted.items.length} itens extraídos, salvando categorias`);
 
+    const body_companyId = jobData.companyId;
+    const body_creditCardId = jobData.creditCardId;
+
     const categories = await prisma.category.findMany({
-      where: { companyId: body.companyId, type: "EXPENSE", isActive: true },
+      where: { companyId: body_companyId, type: "EXPENSE", isActive: true },
       select: { id: true, name: true },
     });
 
     const recentTx = await prisma.transaction.findMany({
       where: {
-        companyId: body.companyId,
+        companyId: body_companyId,
         categoryId: { not: null },
         importSource: "invoice_import",
       },
@@ -99,7 +110,7 @@ export default async (req: Request) => {
     });
 
     const creditCard = await prisma.creditCard.findFirst({
-      where: { id: body.creditCardId, companyId: body.companyId },
+      where: { id: body_creditCardId, companyId: body_companyId },
       select: { id: true, name: true, brand: true },
     });
 
@@ -115,7 +126,13 @@ export default async (req: Request) => {
 
     await prisma.invoiceJob.update({
       where: { id: jobId },
-      data: { status: "READY", errorMessage: null, result: result as unknown as object, finishedAt: new Date() },
+      data: {
+        status: "READY",
+        errorMessage: null,
+        result: result as unknown as object,
+        finishedAt: new Date(),
+        payload: null, // libera espaço — não precisa mais do base64
+      },
     });
 
     return new Response("ok", { status: 200 });

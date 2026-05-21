@@ -361,6 +361,8 @@ model InvoiceJob {
   companyId    String
   creditCardId String
   status       InvoiceJobStatus @default(PROCESSING)
+  payload      String?         @db.Text  // base64 do arquivo (temporário, limpo ao concluir)
+  mediaType    String?         // image/* ou application/pdf
   result       Json?           // ExtractionResult quando ready
   errorMessage String?         // mensagem se status=ERROR
   startedAt    DateTime        @default(now())

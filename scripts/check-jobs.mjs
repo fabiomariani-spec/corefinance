@@ -26,7 +26,7 @@ for (const j of jobs) {
     ? `${Math.round((j.finishedAt - j.startedAt) / 1000)}s`
     : `${Math.round((Date.now() - j.startedAt) / 1000)}s (em andamento)`;
   console.log(`${j.id} | ${j.status.padEnd(11)} | ${j.createdAt.toISOString()} | ${elapsed}`);
-  if (j.errorMessage) console.log(`  ERROR: ${j.errorMessage}`);
+  if (j.errorMessage) console.log(`  msg: ${j.errorMessage}`);
 }
 
 await prisma.$disconnect();
