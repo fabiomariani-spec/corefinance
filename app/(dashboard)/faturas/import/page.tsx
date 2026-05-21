@@ -182,7 +182,9 @@ export default function FaturasPage() {
       } else {
         setEditDueDate("");
       }
-      setEditPaymentDate("");
+      // Pré-preenche pagamento com hoje — geralmente quem sobe fatura já pagou.
+      // Pode limpar se for o caso raro de fatura ainda em aberto.
+      setEditPaymentDate(new Date().toISOString().slice(0, 10));
       setStep("review");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erro desconhecido");
@@ -595,7 +597,9 @@ export default function FaturasPage() {
                   placeholder="Em aberto"
                   className="w-full bg-transparent text-zinc-100 font-semibold text-sm outline-none border-b border-transparent focus:border-indigo-500"
                 />
-                {!editPaymentDate && (
+                {editPaymentDate ? (
+                  <p className="text-[10px] text-emerald-600 mt-0.5">Marcado como pago — limpe se ainda em aberto</p>
+                ) : (
                   <p className="text-[10px] text-zinc-600 mt-0.5">Vazio = pendente</p>
                 )}
               </div>
