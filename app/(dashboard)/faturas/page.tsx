@@ -248,6 +248,7 @@ export default function FaturasPage() {
   const includedCount = items.filter((i) => i.include).length;
   const includedTotal = items.filter((i) => i.include).reduce((s, i) => s + i.amount, 0);
   const includedCredits = items.filter((i) => i.include && i.amount < 0).reduce((s, i) => s + i.amount, 0);
+  const includedPurchases = items.filter((i) => i.include && i.amount > 0).reduce((s, i) => s + i.amount, 0);
   const reconciliationDiff = result ? Math.abs(includedTotal - result.totalAmount) : 0;
   // Mesmo com chargedThisMonth filtrando, pode sobrar uns centavos de OCR.
   // Tolerância: 0.5% do total ou R$ 1, o que for maior.
@@ -594,6 +595,32 @@ export default function FaturasPage() {
                   <> <strong className="text-zinc-200">{futureItemsCount}</strong> {futureItemsCount === 1 ? "lançamento foi detectado" : "lançamentos foram detectados"} como parcela futura ou fora deste mês — vêm desmarcados por padrão.</>
                 )}
               </span>
+            </div>
+
+            {/* Resumo financeiro — compras + créditos = total */}
+            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+              <p className="text-xs text-zinc-500 mb-3">Resumo financeiro</p>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                <div className="flex flex-col">
+                  <span className="text-xs text-zinc-500">Compras</span>
+                  <span className="font-semibold text-zinc-100 tabular-nums">{formatCurrency(includedPurchases)}</span>
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-xs text-zinc-500">Créditos / Estornos</span>
+                  <span className={`font-semibold tabular-nums ${includedCredits < 0 ? "text-emerald-400" : "text-zinc-100"}`}>
+                    {formatCurrency(includedCredits)}
+                  </span>
+                </div>
+                <div className="flex flex-col md:items-end md:border-l md:border-zinc-800 md:pl-4">
+                  <span className="text-xs text-zinc-500">Total</span>
+                  <span className="font-semibold text-zinc-100 tabular-nums text-lg">{formatCurrency(includedTotal)}</span>
+                  {result && Math.abs(includedTotal - result.totalAmount) > 0.01 && (
+                    <span className="text-xs text-zinc-500 mt-0.5">
+                      fatura impressa: {formatCurrency(result.totalAmount)}
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
 
             {/* Reconciliation banner */}
