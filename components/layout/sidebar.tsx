@@ -20,6 +20,7 @@ import {
   Wallet,
   Users,
   UserRound,
+  UserCircle2,
   CalendarDays,
 } from "lucide-react";
 import { useState, useEffect } from "react";
@@ -48,7 +49,8 @@ const groups = [
     label: "Empresa",
     icon: Users,
     items: [
-      { label: "Colaboradores", href: "/colaboradores", icon: UserRound   },
+      { label: "Colaboradores", href: "/colaboradores", icon: UserRound    },
+      { label: "Contatos",      href: "/contatos",      icon: UserCircle2  },
       { label: "Eventos",       href: "/eventos",       icon: CalendarDays },
       { label: "Categorias",    href: "/categorias",    icon: Tag          },
       { label: "Relatórios",    href: "/relatorios",    icon: BarChart3    },
