@@ -4,10 +4,8 @@
 //
 // O sufixo -background no nome do arquivo é o que ativa o modo background.
 // Responde 202 imediatamente; cliente acompanha via GET /api/invoices/job/[id].
-import { PrismaClient } from "@prisma/client";
+import { prisma } from "../../lib/prisma";
 import { extractInvoiceFromFile, detectMediaType } from "../../lib/claude";
-
-const prisma = new PrismaClient();
 
 interface BackgroundPayload {
   jobId: string;
@@ -17,18 +15,24 @@ interface BackgroundPayload {
   mediaType: "image/jpeg" | "image/png" | "image/webp" | "application/pdf";
 }
 
+console.log("[bg] module loaded");
+
 export default async (req: Request) => {
+  console.log("[bg] handler invoked");
   let jobId: string | undefined;
   try {
     const body = (await req.json()) as BackgroundPayload;
     jobId = body.jobId;
+    console.log("[bg] payload received, jobId=", jobId);
     if (!jobId) return new Response("missing jobId", { status: 400 });
 
     // Source of truth: magic bytes, não declared mimetype.
     const buf = Buffer.from(body.base64, "base64");
     const real = detectMediaType(buf) ?? body.mediaType;
+    console.log("[bg] file detected as", real, "size=", buf.length);
 
     const extracted = await extractInvoiceFromFile(body.base64, real);
+    console.log("[bg] extraction done, items=", extracted.items.length);
 
     // Carrega categorias e memória de descrições pra sugestão automática
     const categories = await prisma.category.findMany({
