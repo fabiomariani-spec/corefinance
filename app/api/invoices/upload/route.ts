@@ -36,14 +36,29 @@ export async function POST(req: NextRequest): Promise<Response> {
       data: { companyId, creditCardId, status: "PROCESSING" },
     });
 
-    // Dispara background function (fire & forget — não aguardamos resposta)
+    // Dispara background function. Aguarda o 202 do Netlify (que vem em <100ms)
+    // porque fire-and-forget em serverless seria descartado quando o lambda
+    // termina. A função BG continua rodando em background depois do 202.
     const baseUrl = process.env.URL || process.env.DEPLOY_URL || req.nextUrl.origin;
     const bgUrl = `${baseUrl}/.netlify/functions/process-invoice-background`;
-    fetch(bgUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jobId: job.id, companyId, creditCardId, base64, mediaType }),
-    }).catch((err) => console.error("[upload] failed to dispatch background fn:", err));
+    try {
+      const bgRes = await fetch(bgUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId: job.id, companyId, creditCardId, base64, mediaType }),
+      });
+      if (bgRes.status !== 202 && !bgRes.ok) {
+        const body = await bgRes.text().catch(() => "");
+        console.error("[upload] background fn returned", bgRes.status, body.slice(0, 200));
+      }
+    } catch (err) {
+      console.error("[upload] failed to dispatch background fn:", err);
+      await prisma.invoiceJob.update({
+        where: { id: job.id },
+        data: { status: "ERROR", errorMessage: "Falha ao disparar processamento", finishedAt: new Date() },
+      }).catch(() => {});
+      return NextResponse.json({ error: "Falha ao iniciar processamento" }, { status: 500 });
+    }
 
     return NextResponse.json({ jobId: job.id });
   } catch (error) {
