@@ -5,7 +5,6 @@
 // O sufixo -background no nome do arquivo é o que ativa o modo background.
 // Responde 202 imediatamente; cliente acompanha via GET /api/invoices/job/[id].
 import { prisma } from "../../lib/prisma";
-import { extractInvoiceFromFile, detectMediaType } from "../../lib/claude";
 
 interface BackgroundPayload {
   jobId: string;
@@ -17,32 +16,38 @@ interface BackgroundPayload {
 
 console.log("[bg] module loaded");
 
+// Helper: marca progresso no DB (errorMessage usado como log persistente).
+async function markProgress(jobId: string | undefined, msg: string) {
+  console.log("[bg]", msg);
+  if (!jobId) return;
+  try {
+    await prisma.invoiceJob.update({ where: { id: jobId }, data: { errorMessage: msg } });
+  } catch (e) {
+    console.error("[bg] markProgress failed:", e);
+  }
+}
+
 export default async (req: Request) => {
   console.log("[bg] handler invoked");
   let jobId: string | undefined;
   try {
     const body = (await req.json()) as BackgroundPayload;
     jobId = body.jobId;
-    console.log("[bg] payload received, jobId=", jobId);
+    await markProgress(jobId, "1/4 payload recebido");
     if (!jobId) return new Response("missing jobId", { status: 400 });
 
-    // Marca "iniciado" no DB pra confirmar que o handler ao menos chegou aqui.
-    // Se o status fica em PROCESSING sem nunca virar "started", o handler nem
-    // foi invocado (provavelmente erro de bundle no module load).
-    await prisma.invoiceJob.update({
-      where: { id: jobId },
-      data: { errorMessage: "extraindo..." },
-    });
+    // Import dinâmico do extractor — isola problemas de bundle/module load.
+    await markProgress(jobId, "2/4 carregando extrator");
+    const { extractInvoiceFromFile, detectMediaType } = await import("../../lib/claude");
 
-    // Source of truth: magic bytes, não declared mimetype.
     const buf = Buffer.from(body.base64, "base64");
     const real = detectMediaType(buf) ?? body.mediaType;
-    console.log("[bg] file detected as", real, "size=", buf.length);
 
+    await markProgress(jobId, `3/4 extraindo IA (${real}, ${buf.length} bytes)`);
     const extracted = await extractInvoiceFromFile(body.base64, real);
-    console.log("[bg] extraction done, items=", extracted.items.length);
 
-    // Carrega categorias e memória de descrições pra sugestão automática
+    await markProgress(jobId, `4/4 ${extracted.items.length} itens extraídos, salvando categorias`);
+
     const categories = await prisma.category.findMany({
       where: { companyId: body.companyId, type: "EXPENSE", isActive: true },
       select: { id: true, name: true },
@@ -110,18 +115,22 @@ export default async (req: Request) => {
 
     await prisma.invoiceJob.update({
       where: { id: jobId },
-      data: { status: "READY", result: result as unknown as object, finishedAt: new Date() },
+      data: { status: "READY", errorMessage: null, result: result as unknown as object, finishedAt: new Date() },
     });
 
     return new Response("ok", { status: 200 });
   } catch (err) {
-    console.error("[process-invoice-background] error:", err);
+    const message = err instanceof Error ? `${err.message}\n${err.stack?.slice(0, 500) ?? ""}` : "Erro desconhecido na extração";
+    console.error("[bg] error:", message);
     if (jobId) {
-      const message = err instanceof Error ? err.message : "Erro desconhecido na extração";
-      await prisma.invoiceJob.update({
-        where: { id: jobId },
-        data: { status: "ERROR", errorMessage: message, finishedAt: new Date() },
-      }).catch(() => {});
+      try {
+        await prisma.invoiceJob.update({
+          where: { id: jobId },
+          data: { status: "ERROR", errorMessage: message, finishedAt: new Date() },
+        });
+      } catch (e) {
+        console.error("[bg] failed to mark job as ERROR:", e);
+      }
     }
     return new Response("error", { status: 500 });
   }
