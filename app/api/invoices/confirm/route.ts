@@ -2,6 +2,9 @@ import { prisma } from "@/lib/prisma";
 import { withAuth } from "@/lib/api-handler";
 import { parseBRDate } from "@/lib/dates";
 
+// Confirm pode demorar pra fatura com 500+ itens. Bumpa pra 240s.
+export const maxDuration = 240;
+
 interface ConfirmItem {
   date: string;
   description: string;
@@ -97,65 +100,85 @@ export const POST = withAuth(async ({ companyId, req }) => {
     };
   }
 
-  // Create transactions for included items
+  // Create transactions for included items — em lote, não num for await
   const includedItems = items.filter((item) => item.include);
-  const created: string[] = [];
+  const isPaid = !!paymentDate;
+  const paymentDateParsed = paymentDate ? parseBRDate(paymentDate) : null;
+  const dueDateParsed = parseBRDate(dueDate);
 
+  // 1 query só: pega todas as transações já existentes desse cartão pra dedupe.
+  // Limita aos últimos 90 dias pra não pegar histórico antigo.
+  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+  const existingTxs = await prisma.transaction.findMany({
+    where: {
+      companyId,
+      creditCardId,
+      competenceDate: { gte: ninetyDaysAgo },
+    },
+    select: { description: true, amount: true, competenceDate: true },
+  });
+  // Index por chave determinística pra lookup O(1) em memória.
+  const dupKey = (desc: string, amount: number, date: Date) =>
+    `${desc.toLowerCase().trim()}|${amount.toFixed(2)}|${date.toISOString().slice(0, 10)}`;
+  const existingKeys = new Set(
+    existingTxs.map((t) => dupKey(t.description, Number(t.amount), t.competenceDate)),
+  );
+
+  // Monta payload completo, descartando duplicatas em memória.
+  type TxData = Parameters<typeof prisma.transaction.create>[0]["data"];
+  const toCreate: TxData[] = [];
+  let skipped = 0;
   for (const item of includedItems) {
-    // Check for duplicates: same description + amount + date + creditCard
-    const existing = await prisma.transaction.findFirst({
-      where: {
-        companyId,
-        creditCardId,
-        description: { equals: item.description, mode: "insensitive" },
-        amount: Math.abs(item.amount),
-        competenceDate: {
-          gte: new Date(new Date(item.date).setHours(0, 0, 0, 0)),
-          lte: new Date(new Date(item.date).setHours(23, 59, 59, 999)),
-        },
-      },
-    });
-
-    if (existing) continue; // Skip duplicate
+    const competence = parseBRDate(item.date);
+    if (!competence) continue;
+    const description = item.establishment
+      ? `${item.description} — ${item.establishment}`
+      : item.description;
+    const amount = Math.abs(item.amount);
+    if (existingKeys.has(dupKey(description, amount, competence))) {
+      skipped++;
+      continue;
+    }
+    // Marca como duplicata futura dentro deste mesmo batch (mesma fatura
+    // não pode importar dois itens idênticos consecutivos)
+    existingKeys.add(dupKey(description, amount, competence));
 
     const isCredit = item.amount < 0;
-    // Se o usuário informou paymentDate, marca como PAID/RECEIVED.
-    // Sem paymentDate: PENDING/PREDICTED — vai aparecer no /lancamentos
-    // como pendente ordenado pelo dueDate.
-    const isPaid = !!paymentDate;
     const status = isCredit
       ? (isPaid ? "RECEIVED" : "PENDING")
       : (isPaid ? "PAID" : "PENDING");
-    const tx = await prisma.transaction.create({
-      data: {
-        companyId,
-        description: item.establishment
-          ? `${item.description} — ${item.establishment}`
-          : item.description,
-        amount: Math.abs(item.amount),
-        type: isCredit ? "INCOME" : "EXPENSE",
-        status,
-        categoryId: item.categoryId || null,
-        departmentId: item.departmentId || null,
-        creditCardId,
-        competenceDate: parseBRDate(item.date)!,
-        dueDate: parseBRDate(dueDate),
-        paymentDate: paymentDate ? parseBRDate(paymentDate) : null,
-        paymentMethod: "CREDIT_CARD",
-        importedFromInvoiceId: invoiceId,
-        importSource: "invoice_import",
-        notes: item.installmentInfo
-          ? `Parcela ${item.installmentInfo}`
-          : null,
-      },
+    toCreate.push({
+      companyId,
+      description,
+      amount,
+      type: isCredit ? "INCOME" : "EXPENSE",
+      status,
+      categoryId: item.categoryId || null,
+      departmentId: item.departmentId || null,
+      creditCardId,
+      competenceDate: competence,
+      dueDate: dueDateParsed,
+      paymentDate: paymentDateParsed,
+      paymentMethod: "CREDIT_CARD",
+      importedFromInvoiceId: invoiceId,
+      importSource: "invoice_import",
+      notes: item.installmentInfo ? `Parcela ${item.installmentInfo}` : null,
     });
+  }
 
-    created.push(tx.id);
+  // createMany: 1 query, milhares de linhas inseridas em uma transação.
+  let created = 0;
+  if (toCreate.length > 0) {
+    const result = await prisma.transaction.createMany({
+      data: toCreate as Parameters<typeof prisma.transaction.createMany>[0]["data"],
+      skipDuplicates: true,
+    });
+    created = result.count;
   }
 
   return {
     invoiceId,
-    transactionsCreated: created.length,
-    skippedDuplicates: includedItems.length - created.length,
+    transactionsCreated: created,
+    skippedDuplicates: skipped,
   };
 }, { errorMsg: "Erro ao confirmar importação" });
