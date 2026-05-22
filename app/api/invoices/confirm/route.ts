@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { withAuth } from "@/lib/api-handler";
 import { parseBRDate } from "@/lib/dates";
+import type { Prisma } from "@prisma/client";
 
 // Confirm pode demorar pra fatura com 500+ itens. Bumpa pra 240s.
 export const maxDuration = 240;
@@ -125,8 +126,7 @@ export const POST = withAuth(async ({ companyId, req }) => {
   );
 
   // Monta payload completo, descartando duplicatas em memória.
-  type TxData = Parameters<typeof prisma.transaction.create>[0]["data"];
-  const toCreate: TxData[] = [];
+  const toCreate: Prisma.TransactionCreateManyInput[] = [];
   let skipped = 0;
   for (const item of includedItems) {
     const competence = parseBRDate(item.date);
@@ -170,7 +170,7 @@ export const POST = withAuth(async ({ companyId, req }) => {
   let created = 0;
   if (toCreate.length > 0) {
     const result = await prisma.transaction.createMany({
-      data: toCreate as Parameters<typeof prisma.transaction.createMany>[0]["data"],
+      data: toCreate,
       skipDuplicates: true,
     });
     created = result.count;
