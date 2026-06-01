@@ -43,142 +43,154 @@ export const POST = withAuth(async ({ companyId, req }) => {
   // Parse reference month YYYY-MM → YYYYMM
   const refMonthInt = parseInt(referenceMonth.replace("-", ""));
 
-  // Detect potential duplicates
-  const existingInvoice = await prisma.creditCardInvoice.findFirst({
-    where: { companyId, creditCardId, referenceMonth: refMonthInt },
-  });
+  // Serializa confirms concorrentes da MESMA fatura. Sem isso, dois cliques no
+  // botão (ou retry da rede) rodam o batch em paralelo, cada um lê o banco
+  // antes do outro commitar e gera duplicatas. pg_advisory_xact_lock libera
+  // automaticamente no COMMIT. Em PgBouncer transaction mode, só lock
+  // xact-level funciona — daí o $transaction envolvendo todo o trabalho.
+  const lockKey = `invoice-confirm:${companyId}:${creditCardId}:${refMonthInt}`;
 
-  let invoiceId: string;
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lockKey}))`;
 
-  if (existingInvoice) {
-    invoiceId = existingInvoice.id;
-  } else {
-    const invoice = await prisma.creditCardInvoice.create({
-      data: {
-        companyId,
-        creditCardId,
-        referenceMonth: refMonthInt,
-        closingDate: new Date(referenceMonth + "-01"),
-        dueDate: dueDate ? new Date(dueDate) : new Date(),
-        totalAmount,
-        status: "CLOSED",
-        importedAt: new Date(),
-        processedAt: new Date(),
-      },
+    const existingInvoice = await tx.creditCardInvoice.findFirst({
+      where: { companyId, creditCardId, referenceMonth: refMonthInt },
     });
-    invoiceId = invoice.id;
-  }
 
-  // Modo "Importar só o total": cria UMA transação consolidada, ignora itens.
-  if (summaryOnly) {
-    const card = await prisma.creditCard.findFirst({
-      where: { id: creditCardId, companyId },
-      select: { name: true },
-    });
+    let invoiceId: string;
+
+    if (existingInvoice) {
+      invoiceId = existingInvoice.id;
+    } else {
+      const invoice = await tx.creditCardInvoice.create({
+        data: {
+          companyId,
+          creditCardId,
+          referenceMonth: refMonthInt,
+          closingDate: new Date(referenceMonth + "-01"),
+          dueDate: dueDate ? new Date(dueDate) : new Date(),
+          totalAmount,
+          status: "CLOSED",
+          importedAt: new Date(),
+          processedAt: new Date(),
+        },
+      });
+      invoiceId = invoice.id;
+    }
+
+    // Modo "Importar só o total": cria UMA transação consolidada, ignora itens.
+    if (summaryOnly) {
+      const card = await tx.creditCard.findFirst({
+        where: { id: creditCardId, companyId },
+        select: { name: true },
+      });
+      const isPaid = !!paymentDate;
+      const created = await tx.transaction.create({
+        data: {
+          companyId,
+          description: `Fatura ${card?.name ?? "cartão"} ${referenceMonth}`,
+          amount: totalAmount,
+          type: "EXPENSE",
+          status: isPaid ? "PAID" : "PENDING",
+          categoryId: summaryCategoryId || null,
+          creditCardId,
+          competenceDate: new Date(referenceMonth + "-01"),
+          dueDate: dueDate ? new Date(dueDate) : new Date(),
+          paymentDate: paymentDate ? parseBRDate(paymentDate) : null,
+          paymentMethod: "CREDIT_CARD",
+          importedFromInvoiceId: invoiceId,
+          importSource: "invoice_import_summary",
+        },
+      });
+      return {
+        invoiceId,
+        transactionsCreated: 1,
+        skippedDuplicates: 0,
+        summaryTransactionId: created.id,
+      };
+    }
+
+    // Create transactions for included items — em lote, não num for await
+    const includedItems = items.filter((item) => item.include);
     const isPaid = !!paymentDate;
-    const tx = await prisma.transaction.create({
-      data: {
+    const paymentDateParsed = paymentDate ? parseBRDate(paymentDate) : null;
+    const dueDateParsed = parseBRDate(dueDate);
+
+    // 1 query só: pega todas as transações já existentes desse cartão pra dedupe.
+    // Limita aos últimos 90 dias pra não pegar histórico antigo.
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+    const existingTxs = await tx.transaction.findMany({
+      where: {
         companyId,
-        description: `Fatura ${card?.name ?? "cartão"} ${referenceMonth}`,
-        amount: totalAmount,
-        type: "EXPENSE",
-        status: isPaid ? "PAID" : "PENDING",
-        categoryId: summaryCategoryId || null,
         creditCardId,
-        competenceDate: new Date(referenceMonth + "-01"),
-        dueDate: dueDate ? new Date(dueDate) : new Date(),
-        paymentDate: paymentDate ? parseBRDate(paymentDate) : null,
+        competenceDate: { gte: ninetyDaysAgo },
+      },
+      select: { description: true, amount: true, competenceDate: true },
+    });
+    // Index por chave determinística pra lookup O(1) em memória.
+    const dupKey = (desc: string, amount: number, date: Date) =>
+      `${desc.toLowerCase().trim()}|${amount.toFixed(2)}|${date.toISOString().slice(0, 10)}`;
+    const existingKeys = new Set(
+      existingTxs.map((t) => dupKey(t.description, Number(t.amount), t.competenceDate)),
+    );
+
+    // Monta payload completo, descartando duplicatas em memória.
+    const toCreate: Prisma.TransactionCreateManyInput[] = [];
+    let skipped = 0;
+    for (const item of includedItems) {
+      const competence = parseBRDate(item.date);
+      if (!competence) continue;
+      const description = item.establishment
+        ? `${item.description} — ${item.establishment}`
+        : item.description;
+      const amount = Math.abs(item.amount);
+      if (existingKeys.has(dupKey(description, amount, competence))) {
+        skipped++;
+        continue;
+      }
+      existingKeys.add(dupKey(description, amount, competence));
+
+      const isCredit = item.amount < 0;
+      const status = isCredit
+        ? (isPaid ? "RECEIVED" : "PENDING")
+        : (isPaid ? "PAID" : "PENDING");
+      toCreate.push({
+        companyId,
+        description,
+        amount,
+        type: isCredit ? "INCOME" : "EXPENSE",
+        status,
+        categoryId: item.categoryId || null,
+        departmentId: item.departmentId || null,
+        creditCardId,
+        competenceDate: competence,
+        dueDate: dueDateParsed,
+        paymentDate: paymentDateParsed,
         paymentMethod: "CREDIT_CARD",
         importedFromInvoiceId: invoiceId,
-        importSource: "invoice_import_summary",
-      },
-    });
+        importSource: "invoice_import",
+        notes: item.installmentInfo ? `Parcela ${item.installmentInfo}` : null,
+      });
+    }
+
+    // createMany: 1 query, milhares de linhas inseridas em uma transação.
+    // skipDuplicates depende do unique index parcial
+    // `transactions_invoice_import_dedupe` no banco (criado fora do schema
+    // Prisma porque é parcial com LOWER(TRIM(description))). Sem ele,
+    // skipDuplicates é no-op nessa coluna.
+    let created = 0;
+    if (toCreate.length > 0) {
+      const result = await tx.transaction.createMany({
+        data: toCreate,
+        skipDuplicates: true,
+      });
+      created = result.count;
+    }
+
     return {
       invoiceId,
-      transactionsCreated: 1,
-      skippedDuplicates: 0,
-      summaryTransactionId: tx.id,
+      transactionsCreated: created,
+      skippedDuplicates: skipped,
     };
-  }
-
-  // Create transactions for included items — em lote, não num for await
-  const includedItems = items.filter((item) => item.include);
-  const isPaid = !!paymentDate;
-  const paymentDateParsed = paymentDate ? parseBRDate(paymentDate) : null;
-  const dueDateParsed = parseBRDate(dueDate);
-
-  // 1 query só: pega todas as transações já existentes desse cartão pra dedupe.
-  // Limita aos últimos 90 dias pra não pegar histórico antigo.
-  const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
-  const existingTxs = await prisma.transaction.findMany({
-    where: {
-      companyId,
-      creditCardId,
-      competenceDate: { gte: ninetyDaysAgo },
-    },
-    select: { description: true, amount: true, competenceDate: true },
-  });
-  // Index por chave determinística pra lookup O(1) em memória.
-  const dupKey = (desc: string, amount: number, date: Date) =>
-    `${desc.toLowerCase().trim()}|${amount.toFixed(2)}|${date.toISOString().slice(0, 10)}`;
-  const existingKeys = new Set(
-    existingTxs.map((t) => dupKey(t.description, Number(t.amount), t.competenceDate)),
-  );
-
-  // Monta payload completo, descartando duplicatas em memória.
-  const toCreate: Prisma.TransactionCreateManyInput[] = [];
-  let skipped = 0;
-  for (const item of includedItems) {
-    const competence = parseBRDate(item.date);
-    if (!competence) continue;
-    const description = item.establishment
-      ? `${item.description} — ${item.establishment}`
-      : item.description;
-    const amount = Math.abs(item.amount);
-    if (existingKeys.has(dupKey(description, amount, competence))) {
-      skipped++;
-      continue;
-    }
-    // Marca como duplicata futura dentro deste mesmo batch (mesma fatura
-    // não pode importar dois itens idênticos consecutivos)
-    existingKeys.add(dupKey(description, amount, competence));
-
-    const isCredit = item.amount < 0;
-    const status = isCredit
-      ? (isPaid ? "RECEIVED" : "PENDING")
-      : (isPaid ? "PAID" : "PENDING");
-    toCreate.push({
-      companyId,
-      description,
-      amount,
-      type: isCredit ? "INCOME" : "EXPENSE",
-      status,
-      categoryId: item.categoryId || null,
-      departmentId: item.departmentId || null,
-      creditCardId,
-      competenceDate: competence,
-      dueDate: dueDateParsed,
-      paymentDate: paymentDateParsed,
-      paymentMethod: "CREDIT_CARD",
-      importedFromInvoiceId: invoiceId,
-      importSource: "invoice_import",
-      notes: item.installmentInfo ? `Parcela ${item.installmentInfo}` : null,
-    });
-  }
-
-  // createMany: 1 query, milhares de linhas inseridas em uma transação.
-  let created = 0;
-  if (toCreate.length > 0) {
-    const result = await prisma.transaction.createMany({
-      data: toCreate,
-      skipDuplicates: true,
-    });
-    created = result.count;
-  }
-
-  return {
-    invoiceId,
-    transactionsCreated: created,
-    skippedDuplicates: skipped,
-  };
+  }, { timeout: 240_000, maxWait: 60_000 });
 }, { errorMsg: "Erro ao confirmar importação" });
