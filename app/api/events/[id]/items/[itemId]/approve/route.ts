@@ -43,7 +43,7 @@ export const POST = withAuth<Params>(async ({ companyId, params }) => {
       eventItemId:   item.id,
       importSource:  "event_approval",
       notes:         item.notes         || null,
-      paymentMethod: item.paymentMethod ? (item.paymentMethod as "CREDIT_CARD" | "DEBIT_CARD" | "BANK_TRANSFER" | "PIX" | "BOLETO" | "CASH" | "CHECK" | "OTHER") : null,
+      paymentMethod: item.paymentMethod ? (item.paymentMethod as "CREDIT_CARD" | "DEBIT_CARD" | "BANK_TRANSFER" | "PIX" | "BOLETO" | "CASH" | "CHECK" | "MERCADO_PAGO" | "OTHER") : null,
       tags:          [],
     },
   });

@@ -107,6 +107,7 @@ const paymentMethodLabels: Record<string, string> = {
   BOLETO: "Boleto",
   CASH: "Dinheiro",
   CHECK: "Cheque",
+  MERCADO_PAGO: "Mercado Pago",
   OTHER: "Outro",
 };
 

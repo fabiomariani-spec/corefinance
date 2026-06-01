@@ -714,6 +714,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                       <SelectItem value="DEBIT_CARD">Cartão de Débito</SelectItem>
                       <SelectItem value="CASH">Dinheiro</SelectItem>
                       <SelectItem value="CHECK">Cheque</SelectItem>
+                      <SelectItem value="MERCADO_PAGO">Mercado Pago</SelectItem>
                       <SelectItem value="OTHER">Outro</SelectItem>
                     </SelectContent>
                   </Select>

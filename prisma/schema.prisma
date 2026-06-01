@@ -304,6 +304,7 @@ enum PaymentMethod {
   BOLETO
   CASH
   CHECK
+  MERCADO_PAGO
   OTHER
 }
 
