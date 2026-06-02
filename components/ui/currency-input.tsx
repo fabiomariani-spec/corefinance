@@ -35,6 +35,8 @@ interface CurrencyInputProps {
   placeholder?: string;
   id?: string;
   required?: boolean;
+  /** Ref encaminhada para o <input> (modo padrão) — usada p/ foco programático. */
+  inputRef?: React.Ref<HTMLInputElement>;
 }
 
 function formatBRL(cents: number): string {
@@ -147,6 +149,7 @@ export function CurrencyInput({
   placeholder,
   id,
   required,
+  inputRef,
 }: CurrencyInputProps) {
   const [displayValue, setDisplayValue] = useState(() => {
     const cents = Math.round(value * 100);
@@ -296,6 +299,7 @@ export function CurrencyInput({
         onKeyDown={handleKeyDown}
         placeholder={effectivePlaceholder}
         required={required}
+        ref={inputRef}
         className={cn(
           "flex h-9 w-full rounded-md border bg-zinc-800/50",
           "pl-9 pr-3 py-2 text-sm text-zinc-100",

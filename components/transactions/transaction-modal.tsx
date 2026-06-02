@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Loader2, ArrowUpCircle, ArrowDownCircle, RefreshCw, ChevronDown, Check, AlertCircle, FileClock, X } from "lucide-react";
@@ -17,6 +17,7 @@ import { CurrencyInput } from "@/components/ui/currency-input";
 import { SmartDateInput } from "@/components/ui/smart-date-input";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { cachedFetch } from "@/lib/cached-fetch";
+import { toast } from "@/lib/toast";
 
 // ── localStorage keys ─────────────────────────────────────────────────────
 const DEFAULTS_KEY = (type: "INCOME" | "EXPENSE") => `core-finance:tx-defaults:${type}`;
@@ -139,6 +140,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
 
   // Refs for focus on validation
   const descriptionRef = useRef<HTMLInputElement>(null);
+  const amountRef = useRef<HTMLInputElement>(null);
   const competenceRef = useRef<HTMLInputElement>(null);
 
   // Propagation dialog: shown when editing a recurring transaction and category/dept changed
@@ -296,7 +298,11 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
       body: JSON.stringify(payload),
     });
     setLoading(false);
-    if (!res.ok) return; // keep modal open + draft intact on failure
+    if (!res.ok) {
+      // Doherty: nunca deixar a ação sem resposta — feedback imediato de falha.
+      toast.error("Não foi possível salvar. Verifique a conexão e tente de novo.");
+      return; // keep modal open + draft intact on failure
+    }
     // Persist smart defaults (per type) on successful NEW save
     if (!isEditing) {
       saveDefaults(form.type, {
@@ -310,6 +316,14 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
     setShowPropagateDialog(false);
     setPendingPayload(null);
     onOpenChange(false);
+    // Peak-End: fechar com feedback positivo memorável (o pai só refaz o fetch).
+    toast.success(
+      isEditing
+        ? "Lançamento atualizado"
+        : form.isRecurring
+          ? (openEnded ? "Recorrência criada" : `${recurringMonths} lançamentos criados`)
+          : "Lançamento criado"
+    );
     onSuccess();
   }
 
@@ -328,6 +342,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
       // Focus first invalid input shortly after sections expand
       setTimeout(() => {
         if (newErrors.description) descriptionRef.current?.focus();
+        else if (newErrors.amount) amountRef.current?.focus();
         else if (newErrors.competenceDate) competenceRef.current?.focus();
       }, 50);
       return;
@@ -374,11 +389,18 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
   }) {
     const isOpen = openSections[sectionKey];
     const hasError = sectionHasError(sectionKey);
+    // Goal-Gradient: sinaliza quando a seção não tem pendência (sem barra de etapas).
+    const sectionDone =
+      sectionKey === "data"
+        ? Boolean(form.description.trim() && form.amount > 0)
+        : sectionKey === "classification"
+          ? Boolean(form.competenceDate)
+          : Boolean(form.accountId || form.creditCardId || form.paymentMethod);
     return (
       <button
         type="button"
         onClick={() => toggleSection(sectionKey)}
-        className={`w-full flex items-center justify-between px-4 py-3 rounded-t-lg transition-colors ${
+        className={`w-full flex items-center justify-between px-4 py-3 transition-colors ${isOpen ? "rounded-t-lg" : "rounded-lg"} ${
           hasError
             ? "bg-red-950/40 border-b border-red-600/40 hover:bg-red-950/60"
             : isOpen
@@ -387,7 +409,9 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
         }`}
       >
         <div className="flex items-center gap-2.5 text-left">
-          {hasError && <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />}
+          {hasError
+            ? <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
+            : sectionDone && <Check className="w-4 h-4 text-emerald-400 shrink-0" />}
           <div>
             <p className={`text-sm font-medium leading-none ${hasError ? "text-red-300" : "text-zinc-100"}`}>
               {title} {required && <span className="text-indigo-400">*</span>}
@@ -432,10 +456,19 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
           <DialogTitle>{isEditing ? "Editar Lançamento" : "Novo Lançamento"}</DialogTitle>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto -mx-6 px-6 space-y-3">
+        <div
+          className="flex-1 overflow-y-auto -mx-6 px-6 space-y-3"
+          onKeyDown={(e) => {
+            // Flow/Doherty: salvar de qualquer campo sem tirar a mão do teclado.
+            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+              e.preventDefault();
+              handleSubmit();
+            }
+          }}
+        >
           {/* ── Draft restore banner (NEW modal only) ── */}
           {!isEditing && pendingDraft && (
-            <div className="flex items-center justify-between gap-3 rounded-md border border-indigo-600/40 bg-indigo-600/10 px-3 py-2">
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-indigo-600/40 bg-indigo-600/10 px-3 py-2">
               <div className="flex items-center gap-2 min-w-0">
                 <FileClock className="w-4 h-4 text-indigo-400 shrink-0" />
                 <p className="text-xs text-indigo-200 truncate">
@@ -446,7 +479,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                 <button
                   type="button"
                   onClick={restoreDraft}
-                  className="text-xs font-medium text-indigo-300 hover:text-indigo-200 px-2 py-1 rounded hover:bg-indigo-600/20 transition-colors"
+                  className="text-xs font-medium text-indigo-200 bg-indigo-600/30 hover:bg-indigo-600/50 px-2.5 py-1.5 rounded transition-colors"
                 >
                   Restaurar
                 </button>
@@ -454,9 +487,9 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                   type="button"
                   onClick={discardDraft}
                   aria-label="Descartar rascunho"
-                  className="text-zinc-400 hover:text-zinc-200 p-1 rounded hover:bg-zinc-800 transition-colors"
+                  className="flex items-center justify-center min-w-[36px] min-h-[36px] -m-1 text-zinc-400 hover:text-zinc-200 rounded hover:bg-zinc-800 transition-colors"
                 >
-                  <X className="w-3.5 h-3.5" />
+                  <X className="w-4 h-4" />
                 </button>
               </div>
             </div>
@@ -488,6 +521,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                   <Label>Descrição *</Label>
                   <Input
                     ref={descriptionRef}
+                    autoFocus
                     placeholder="Ex: Salário - João Silva"
                     value={form.description}
                     onChange={(e) => { setForm({ ...form, description: e.target.value }); clearFieldError("description"); }}
@@ -501,6 +535,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                   <div className="space-y-1.5">
                     <Label>Valor *</Label>
                     <CurrencyInput
+                      inputRef={amountRef}
                       value={form.amount}
                       onChange={(n) => { setForm({ ...form, amount: n }); clearFieldError("amount"); }}
                       onBlur={() => handleBlur("amount")}
@@ -512,7 +547,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                     <Select value={form.status} onValueChange={(v) => setForm({ ...form, status: v })}>
                       <SelectTrigger><SelectValue /></SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="PENDING">Pendente</SelectItem>
+                        <SelectItem value="PENDING">Pendente (padrão)</SelectItem>
                         <SelectItem value="PREDICTED">Previsto</SelectItem>
                         <SelectItem value="PAID">Pago</SelectItem>
                         <SelectItem value="RECEIVED">Recebido</SelectItem>
@@ -568,11 +603,13 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                   <p className="text-xs text-zinc-500">Use pra atribuir esse lançamento a uma pessoa (ex: vale, bônus, reembolso)</p>
                 </div>
 
-                <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-1.5">
+                  <p className="text-xs font-medium text-zinc-400">Datas</p>
+                  <div className="grid grid-cols-3 gap-3">
                   <div className="space-y-1.5">
                     <Label className="flex items-center gap-1.5">
                       Competência *
-                      <InfoTooltip size="sm" text="Mês em que o lançamento foi gerado/contratado (não confundir com vencimento). Ex: salário de janeiro tem competência jan, mesmo que o pagamento caia em fevereiro." />
+                      <InfoTooltip size="sm" className="p-1.5 -m-1.5" text="Mês em que o lançamento foi gerado/contratado (não confundir com vencimento). Ex: salário de janeiro tem competência jan, mesmo que o pagamento caia em fevereiro." />
                     </Label>
                     <SmartDateInput
                       inputRef={competenceRef}
@@ -587,7 +624,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                   <div className="space-y-1.5">
                     <Label className="flex items-center gap-1.5">
                       {form.isRecurring && !isEditing ? "Venc. 1ª parcela" : "Vencimento"}
-                      <InfoTooltip size="sm" text="Data limite pra pagar (ou receber) o valor. Após essa data o lançamento entra em atraso." />
+                      <InfoTooltip size="sm" className="p-1.5 -m-1.5" text="Data limite pra pagar (ou receber) o valor. Após essa data o lançamento entra em atraso." />
                     </Label>
                     <SmartDateInput
                       value={form.dueDate}
@@ -597,17 +634,18 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                   <div className="space-y-1.5">
                     <Label className="flex items-center gap-1.5">
                       Pagamento
-                      <InfoTooltip size="sm" text="Data efetiva em que o dinheiro entrou ou saiu da conta. Preenchido só depois que o pagamento foi feito de fato." />
+                      <InfoTooltip size="sm" className="p-1.5 -m-1.5" text="Data efetiva em que o dinheiro entrou ou saiu da conta. Preenchido só depois que o pagamento foi feito de fato." />
                     </Label>
                     <SmartDateInput
                       value={form.paymentDate}
                       onChange={(iso) => setForm({ ...form, paymentDate: iso })}
                     />
                   </div>
+                  </div>
                 </div>
 
                 {!isEditing && (
-                  <div className={`rounded-xl border transition-all ${form.isRecurring ? "border-indigo-600/50 bg-indigo-600/5" : "border-zinc-700 bg-zinc-800/30"}`}>
+                  <div className={`rounded-lg border transition-all ${form.isRecurring ? "border-indigo-600/50 bg-indigo-600/5" : "border-zinc-700 bg-zinc-800/30"}`}>
                     <button type="button" onClick={() => setForm({ ...form, isRecurring: !form.isRecurring })}
                       className="w-full flex items-center justify-between px-4 py-3">
                       <div className="flex items-center gap-2.5">
@@ -662,6 +700,11 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                               ? <span className="text-violet-400 font-medium">Sem prazo definido — cancele manualmente quando quiser</span>
                               : <><strong className="text-indigo-400">{recurringMonths} lançamentos</strong> pendentes serão criados</>
                             }
+                            {!openEnded && (parseInt(recurringMonths) || 0) > 60 && (
+                              <span className="mt-1 block text-amber-400">
+                                Isso cria muitos lançamentos ({recurringMonths} meses). Confirme se é o esperado.
+                              </span>
+                            )}
                           </p>
                         </div>
                       </div>
@@ -707,14 +750,23 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                   <Select value={form.paymentMethod} onValueChange={(v) => setForm({ ...form, paymentMethod: v })}>
                     <SelectTrigger><SelectValue placeholder="Selecionar..." /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="PIX">PIX</SelectItem>
-                      <SelectItem value="BANK_TRANSFER">Transferência Bancária</SelectItem>
-                      <SelectItem value="BOLETO">Boleto</SelectItem>
-                      <SelectItem value="CREDIT_CARD">Cartão de Crédito</SelectItem>
-                      <SelectItem value="DEBIT_CARD">Cartão de Débito</SelectItem>
-                      <SelectItem value="CASH">Dinheiro</SelectItem>
-                      <SelectItem value="CHECK">Cheque</SelectItem>
-                      <SelectItem value="MERCADO_PAGO">Mercado Pago</SelectItem>
+                      <SelectGroup>
+                        <SelectLabel>Instantâneo</SelectLabel>
+                        <SelectItem value="PIX">PIX</SelectItem>
+                        <SelectItem value="MERCADO_PAGO">Mercado Pago</SelectItem>
+                        <SelectItem value="CASH">Dinheiro</SelectItem>
+                      </SelectGroup>
+                      <SelectGroup>
+                        <SelectLabel>Cartão</SelectLabel>
+                        <SelectItem value="CREDIT_CARD">Cartão de Crédito</SelectItem>
+                        <SelectItem value="DEBIT_CARD">Cartão de Débito</SelectItem>
+                      </SelectGroup>
+                      <SelectGroup>
+                        <SelectLabel>Bancário</SelectLabel>
+                        <SelectItem value="BANK_TRANSFER">Transferência Bancária</SelectItem>
+                        <SelectItem value="BOLETO">Boleto</SelectItem>
+                        <SelectItem value="CHECK">Cheque</SelectItem>
+                      </SelectGroup>
                       <SelectItem value="OTHER">Outro</SelectItem>
                     </SelectContent>
                   </Select>
@@ -731,6 +783,25 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
         </div>
 
         <DialogFooter className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-800">
+          {(() => {
+            // Zeigarnik + Goal-Gradient: mostra o que falta (ou "pronto") sem barra de etapas.
+            const missing = Object.keys(validate());
+            if (missing.length === 0) {
+              return (
+                <p className="mr-auto flex items-center gap-1.5 text-xs text-emerald-400">
+                  <Check className="w-3.5 h-3.5" /> Pronto para salvar
+                </p>
+              );
+            }
+            const touched = Boolean(form.description.trim()) || form.amount > 0 || Object.keys(errors).length > 0;
+            if (!touched) return null;
+            return (
+              <p className="mr-auto flex items-center gap-1.5 text-xs text-amber-400">
+                <AlertCircle className="w-3.5 h-3.5" />
+                {missing.length === 1 ? "Falta 1 campo obrigatório" : `Faltam ${missing.length} campos obrigatórios`}
+              </p>
+            );
+          })()}
           <Button
             type="button"
             variant="outline"
@@ -744,7 +815,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
             Cancelar
           </Button>
           <Button type="button" onClick={handleSubmit} disabled={loading}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white border-0">
+            className="bg-indigo-600 hover:bg-indigo-700 text-white border-0 gap-2">
             {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Salvando...</>
               : isEditing ? "Salvar"
               : form.isRecurring ? `Criar ${recurringMonths} Lançamentos`
