@@ -13,7 +13,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { CurrencyInput } from "@/components/ui/currency-input";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { formatCurrency, formatDate, formatStatus } from "@/lib/formatters";
 import { toast } from "@/lib/toast";
@@ -132,10 +131,9 @@ export default function InvoiceDetailPage() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [editForm, setEditForm] = useState<{ status: InvoiceStatus; dueDate: string; totalAmount: number }>({
+  const [editForm, setEditForm] = useState<{ status: InvoiceStatus; dueDate: string }>({
     status: "OPEN",
     dueDate: "",
-    totalAmount: 0,
   });
 
   // Delete confirmation
@@ -158,7 +156,6 @@ export default function InvoiceDetailPage() {
       setEditForm({
         status: data.status,
         dueDate: toDateInputValue(data.dueDate),
-        totalAmount: data.totalAmount,
       });
     } finally {
       setLoading(false);
@@ -177,7 +174,6 @@ export default function InvoiceDetailPage() {
         body: JSON.stringify({
           status: editForm.status,
           dueDate: editForm.dueDate,
-          totalAmount: editForm.totalAmount,
         }),
       });
       if (!res.ok) {
@@ -198,7 +194,6 @@ export default function InvoiceDetailPage() {
     setEditForm({
       status: invoice.status,
       dueDate: toDateInputValue(invoice.dueDate),
-      totalAmount: invoice.totalAmount,
     });
     setEditing(false);
   }
@@ -351,10 +346,10 @@ export default function InvoiceDetailPage() {
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-zinc-100">Editar fatura</h3>
               <span className="text-xs text-zinc-500">
-                Cartão e mês de referência são imutáveis — para alterar, exclua e reimporte.
+                Cartão e mês são imutáveis (exclua e reimporte para mudar). O total é calculado automaticamente pelos lançamentos vinculados.
               </span>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label>Status</Label>
                 <Select
@@ -375,13 +370,6 @@ export default function InvoiceDetailPage() {
                   type="date"
                   value={editForm.dueDate}
                   onChange={(e) => setEditForm((f) => ({ ...f, dueDate: e.target.value }))}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label>Total da fatura</Label>
-                <CurrencyInput
-                  value={editForm.totalAmount}
-                  onChange={(n) => setEditForm((f) => ({ ...f, totalAmount: n }))}
                 />
               </div>
             </div>

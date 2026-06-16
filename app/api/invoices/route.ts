@@ -33,23 +33,31 @@ export const GET = withAuth(async ({ companyId, req }) => {
     },
   });
 
-  // Conta transactions vinculadas em uma única query agrupada (evita N+1)
-  const txCounts = invoices.length === 0
+  // Conta E soma as transactions vinculadas em uma única query agrupada
+  // (evita N+1). O "Total da fatura" é DERIVADO dos lançamentos efetivamente
+  // vinculados (compras − estornos), não do totalAmount declarado na importação
+  // — esse campo era um retrato da extração da IA e descolava da realidade
+  // (reimportação não o atualiza, dedupe/edições mudam os lançamentos).
+  const txAgg = invoices.length === 0
     ? []
     : await prisma.transaction.groupBy({
-        by: ["importedFromInvoiceId"],
+        by: ["importedFromInvoiceId", "type"],
         where: {
           companyId,
           importedFromInvoiceId: { in: invoices.map((i) => i.id) },
         },
         _count: { _all: true },
+        _sum: { amount: true },
       });
 
   const countMap: Record<string, number> = {};
-  for (const row of txCounts) {
-    if (row.importedFromInvoiceId) {
-      countMap[row.importedFromInvoiceId] = row._count._all;
-    }
+  const totalMap: Record<string, number> = {};
+  for (const row of txAgg) {
+    const invId = row.importedFromInvoiceId;
+    if (!invId) continue;
+    countMap[invId] = (countMap[invId] ?? 0) + row._count._all;
+    const sum = Number(row._sum.amount ?? 0);
+    totalMap[invId] = (totalMap[invId] ?? 0) + (row.type === "INCOME" ? -sum : sum);
   }
 
   return invoices.map((inv) => ({
@@ -58,7 +66,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
     referenceMonth: inv.referenceMonth,
     closingDate: inv.closingDate,
     dueDate: inv.dueDate,
-    totalAmount: Number(inv.totalAmount),
+    totalAmount: totalMap[inv.id] ?? 0,
     status: inv.status,
     fileName: inv.fileName,
     fileUrl: inv.fileUrl,

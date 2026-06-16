@@ -51,13 +51,20 @@ export const GET = withAuth<{ id: string }>(async ({ companyId, params }) => {
     },
   });
 
+  // "Total da fatura" é DERIVADO dos lançamentos vinculados (compras − estornos),
+  // não do totalAmount declarado na importação (que descolava da realidade).
+  const computedTotal = transactions.reduce((sum, t) => {
+    const amt = Number(t.amount);
+    return sum + (t.type === "INCOME" ? -amt : amt);
+  }, 0);
+
   return {
     id: invoice.id,
     creditCardId: invoice.creditCardId,
     referenceMonth: invoice.referenceMonth,
     closingDate: invoice.closingDate,
     dueDate: invoice.dueDate,
-    totalAmount: Number(invoice.totalAmount),
+    totalAmount: computedTotal,
     status: invoice.status,
     fileName: invoice.fileName,
     fileUrl: invoice.fileUrl,
@@ -75,10 +82,10 @@ export const GET = withAuth<{ id: string }>(async ({ companyId, params }) => {
 });
 
 // PATCH /api/invoices/[id]
-// Edição parcial: apenas status, dueDate e totalAmount são editáveis aqui.
-// Os outros campos (referenceMonth, closingDate, creditCardId) são imutáveis
-// porque alterar mudaria a identidade da fatura. Pra trocar isso, exclua e
-// reimporte.
+// Edição parcial: apenas status e dueDate são editáveis aqui. O total da fatura
+// é derivado da soma dos lançamentos vinculados (não editável). Os outros campos
+// (referenceMonth, closingDate, creditCardId) são imutáveis porque alterar
+// mudaria a identidade da fatura. Pra trocar isso, exclua e reimporte.
 const VALID_STATUSES: readonly InvoiceStatus[] = ["OPEN", "CLOSED", "PAID", "PROCESSING"];
 
 export const PATCH = withAuth<{ id: string }>(async ({ companyId, params, req }) => {
@@ -116,14 +123,6 @@ export const PATCH = withAuth<{ id: string }>(async ({ companyId, params, req })
       return NextResponse.json({ error: "dueDate inválida" }, { status: 400 });
     }
     data.dueDate = dt;
-  }
-
-  if (Object.prototype.hasOwnProperty.call(body, "totalAmount")) {
-    const n = Number(body.totalAmount);
-    if (isNaN(n) || n < 0) {
-      return NextResponse.json({ error: "totalAmount inválido" }, { status: 400 });
-    }
-    data.totalAmount = n;
   }
 
   if (Object.keys(data).length === 0) {
