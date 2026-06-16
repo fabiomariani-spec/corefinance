@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, Fragment } from "react";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
@@ -12,7 +12,7 @@ import {
   Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
-import { Loader2, ArrowUpCircle, ArrowDownCircle, RefreshCw, ChevronDown, Check, AlertCircle, FileClock, X } from "lucide-react";
+import { Loader2, ArrowUpCircle, ArrowDownCircle, RefreshCw, ChevronLeft, ChevronRight, Check, AlertCircle, FileClock, X } from "lucide-react";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { SmartDateInput } from "@/components/ui/smart-date-input";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
@@ -110,12 +110,19 @@ const EMPTY_FORM = {
   isRecurring: false, tags: [] as string[],
 };
 
-// Map field name → which section it belongs to (for error → open section)
+// Map field name → which step it belongs to (for error → jump to step)
 const FIELD_SECTION: Record<string, "data" | "classification" | "payment"> = {
   description: "data",
   amount: "data",
   competenceDate: "classification",
 };
+
+// Stepper: passos do modal (Dados → Classificação → Pagamento)
+const STEPS = [
+  { key: "data" as const, title: "Dados" },
+  { key: "classification" as const, title: "Classificação" },
+  { key: "payment" as const, title: "Pagamento" },
+];
 
 export function TransactionModal({ open, onOpenChange, transaction, onSuccess }: Props) {
   const isEditing = Boolean(transaction?.id);
@@ -132,12 +139,8 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
-  // Section open/closed state
-  const [openSections, setOpenSections] = useState({
-    data: true,
-    classification: true,
-    payment: false,
-  });
+  // Stepper: passo atual (0=Dados, 1=Classificação, 2=Pagamento)
+  const [step, setStep] = useState(0);
 
   // Refs for focus on validation
   const descriptionRef = useRef<HTMLInputElement>(null);
@@ -159,7 +162,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
   useEffect(() => {
     if (!open) return;
     setErrors({});
-    setOpenSections({ data: true, classification: true, payment: false });
+    setStep(0);
     setPendingDraft(null);
     Promise.all([
       cachedFetch<(Category & { children?: Category[] })[]>("/api/categories"),
@@ -282,12 +285,49 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
     });
   }, []);
 
-  function sectionHasError(section: "data" | "classification" | "payment"): boolean {
-    return Object.keys(errors).some((field) => FIELD_SECTION[field] === section);
+  function stepHasError(stepIndex: number): boolean {
+    const key = STEPS[stepIndex].key;
+    return Object.keys(errors).some((field) => FIELD_SECTION[field] === key);
   }
 
-  function toggleSection(key: "data" | "classification" | "payment") {
-    setOpenSections((s) => ({ ...s, [key]: !s[key] }));
+  // Goal-Gradient: marca o passo como concluído quando seus campos estão ok.
+  function stepDone(stepIndex: number): boolean {
+    const key = STEPS[stepIndex].key;
+    if (key === "data") return Boolean(form.description.trim() && form.amount > 0);
+    if (key === "classification") return Boolean(form.competenceDate);
+    return Boolean(form.accountId || form.creditCardId || form.paymentMethod);
+  }
+
+  // Marca passos que contêm algum campo obrigatório (Dados, Classificação).
+  function stepRequired(stepIndex: number): boolean {
+    return Object.values(FIELD_SECTION).includes(STEPS[stepIndex].key);
+  }
+
+  function focusFirstError(errs: Record<string, string>) {
+    setTimeout(() => {
+      if (errs.description) descriptionRef.current?.focus();
+      else if (errs.amount) amountRef.current?.focus();
+      else if (errs.competenceDate) competenceRef.current?.focus();
+    }, 50);
+  }
+
+  // "Próximo": valida só os obrigatórios do passo atual antes de avançar.
+  function goNext() {
+    const all = validate();
+    const key = STEPS[step].key;
+    const stepErrors = Object.fromEntries(
+      Object.entries(all).filter(([f]) => FIELD_SECTION[f] === key)
+    );
+    if (Object.keys(stepErrors).length > 0) {
+      setErrors((prev) => ({ ...prev, ...stepErrors }));
+      focusFirstError(stepErrors);
+      return;
+    }
+    setStep((s) => Math.min(s + 1, STEPS.length - 1));
+  }
+
+  function goBack() {
+    setStep((s) => Math.max(s - 1, 0));
   }
 
   async function doSave(payload: Record<string, unknown>) {
@@ -332,20 +372,12 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
     const newErrors = validate();
     if (Object.keys(newErrors).length > 0) {
       setErrors(newErrors);
-      // Open every section that contains an error + focus first invalid
-      const sectionsToOpen = { ...openSections };
-      const errFields = Object.keys(newErrors);
-      errFields.forEach((f) => {
-        const sec = FIELD_SECTION[f];
-        if (sec) sectionsToOpen[sec] = true;
-      });
-      setOpenSections(sectionsToOpen);
-      // Focus first invalid input shortly after sections expand
-      setTimeout(() => {
-        if (newErrors.description) descriptionRef.current?.focus();
-        else if (newErrors.amount) amountRef.current?.focus();
-        else if (newErrors.competenceDate) competenceRef.current?.focus();
-      }, 50);
+      // Pula pro primeiro passo com erro + foca o primeiro campo inválido.
+      const firstErrStep = STEPS.findIndex((s) =>
+        Object.keys(newErrors).some((f) => FIELD_SECTION[f] === s.key)
+      );
+      if (firstErrStep >= 0) setStep(firstErrStep);
+      focusFirstError(newErrors);
       return;
     }
 
@@ -382,54 +414,6 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
     await doSave(payload);
   }
 
-  // ── Section header component ───────────────────────────────────────────
-  function SectionHeader({
-    sectionKey, title, subtitle, required,
-  }: {
-    sectionKey: "data" | "classification" | "payment";
-    title: string; subtitle: string; required?: boolean;
-  }) {
-    const isOpen = openSections[sectionKey];
-    const hasError = sectionHasError(sectionKey);
-    // Goal-Gradient: sinaliza quando a seção não tem pendência (sem barra de etapas).
-    const sectionDone =
-      sectionKey === "data"
-        ? Boolean(form.description.trim() && form.amount > 0)
-        : sectionKey === "classification"
-          ? Boolean(form.competenceDate)
-          : Boolean(form.accountId || form.creditCardId || form.paymentMethod);
-    return (
-      <button
-        type="button"
-        onClick={() => toggleSection(sectionKey)}
-        className={`w-full flex items-center justify-between px-4 py-3 transition-colors ${isOpen ? "rounded-t-lg" : "rounded-lg"} ${
-          hasError
-            ? "bg-red-950/40 border-b border-red-600/40 hover:bg-red-950/60"
-            : isOpen
-              ? "bg-zinc-800/60 border-b border-zinc-700 hover:bg-zinc-800"
-              : "bg-zinc-800/30 hover:bg-zinc-800/60"
-        }`}
-      >
-        <div className="flex items-center gap-2.5 text-left">
-          {hasError
-            ? <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
-            : sectionDone && <Check className="w-4 h-4 text-emerald-400 shrink-0" />}
-          <div>
-            <p className={`text-sm font-medium leading-none ${hasError ? "text-red-300" : "text-zinc-100"}`}>
-              {title} {required && <span className="text-indigo-400">*</span>}
-            </p>
-            <p className={`text-xs leading-none mt-1 ${hasError ? "text-red-400/80" : "text-zinc-500"}`}>
-              {subtitle}
-            </p>
-          </div>
-        </div>
-        <ChevronDown
-          className={`w-4 h-4 transition-transform ${hasError ? "text-red-400" : "text-zinc-400"} ${isOpen ? "rotate-180" : ""}`}
-        />
-      </button>
-    );
-  }
-
   function restoreDraft() {
     if (!pendingDraft) return;
     const f = pendingDraft.form as Partial<typeof EMPTY_FORM>;
@@ -458,8 +442,39 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
           <DialogTitle>{isEditing ? "Editar Lançamento" : "Novo Lançamento"}</DialogTitle>
         </DialogHeader>
 
+        {/* ── Stepper: progresso dos passos (clicável) ── */}
+        <div className="flex items-center gap-1 px-1">
+          {STEPS.map((s, i) => {
+            const active = step === i;
+            const err = stepHasError(i);
+            const done = !active && stepDone(i);
+            return (
+              <Fragment key={s.key}>
+                <button
+                  type="button"
+                  onClick={() => setStep(i)}
+                  className={`flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors ${active ? "bg-indigo-600/15" : "hover:bg-zinc-800/60"}`}
+                >
+                  <span className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold shrink-0 ${
+                    err ? "bg-red-600/20 text-red-400 ring-1 ring-red-600/50"
+                    : active ? "bg-indigo-600 text-white"
+                    : done ? "bg-emerald-600/20 text-emerald-400"
+                    : "bg-zinc-800 text-zinc-500"
+                  }`}>
+                    {err ? <AlertCircle className="w-3.5 h-3.5" /> : done ? <Check className="w-3.5 h-3.5" /> : i + 1}
+                  </span>
+                  <span className={`text-sm font-medium hidden sm:block ${active ? "text-indigo-300" : err ? "text-red-400" : "text-zinc-400"}`}>
+                    {s.title}{stepRequired(i) && <span className="text-indigo-400"> *</span>}
+                  </span>
+                </button>
+                {i < STEPS.length - 1 && <div className="flex-1 h-px bg-zinc-800" />}
+              </Fragment>
+            );
+          })}
+        </div>
+
         <div
-          className="flex-1 overflow-y-auto -mx-6 px-6 space-y-3"
+          className="flex-1 overflow-y-auto -mx-6 px-6 pt-1"
           onKeyDown={(e) => {
             // Flow/Doherty: salvar de qualquer campo sem tirar a mão do teclado.
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -468,9 +483,9 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
             }
           }}
         >
-          {/* ── Draft restore banner (NEW modal only) ── */}
-          {!isEditing && pendingDraft && (
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-indigo-600/40 bg-indigo-600/10 px-3 py-2">
+          {/* ── Draft restore banner (NEW modal only, passo 1) ── */}
+          {!isEditing && pendingDraft && step === 0 && (
+            <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-indigo-600/40 bg-indigo-600/10 px-3 py-2">
               <div className="flex items-center gap-2 min-w-0">
                 <FileClock className="w-4 h-4 text-indigo-400 shrink-0" />
                 <p className="text-xs text-indigo-200 truncate">
@@ -497,16 +512,9 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
             </div>
           )}
 
-          {/* ── Seção 1: Dados ── */}
-          <div className={`rounded-lg border ${sectionHasError("data") ? "border-red-600/50" : "border-zinc-700"} overflow-hidden`}>
-            <SectionHeader
-              sectionKey="data"
-              title="Dados"
-              subtitle="Tipo, descrição, valor e status"
-              required
-            />
-            {openSections.data && (
-              <div className="p-4 space-y-4">
+          {/* ── Passo 1: Dados ── */}
+          {step === 0 && (
+            <div className="space-y-4 py-1">
                 {/* Type Toggle */}
                 <div className="flex rounded-lg overflow-hidden border border-zinc-700">
                   <button type="button" onClick={() => setForm({ ...form, type: "EXPENSE" })}
@@ -558,19 +566,12 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                     </Select>
                   </div>
                 </div>
-              </div>
-            )}
-          </div>
+            </div>
+          )}
 
-          {/* ── Seção 2: Classificação ── */}
-          <div className={`rounded-lg border ${sectionHasError("classification") ? "border-red-600/50" : "border-zinc-700"} overflow-hidden`}>
-            <SectionHeader
-              sectionKey="classification"
-              title="Classificação"
-              subtitle="Categoria, departamento, colaborador, datas e recorrência"
-            />
-            {openSections.classification && (
-              <div className="p-4 space-y-4">
+          {/* ── Passo 2: Classificação ── */}
+          {step === 1 && (
+            <div className="space-y-4 py-1">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <Label>Categoria</Label>
@@ -757,19 +758,12 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                     })()}
                   </div>
                 )}
-              </div>
-            )}
-          </div>
+            </div>
+          )}
 
-          {/* ── Seção 3: Pagamento ── */}
-          <div className={`rounded-lg border ${sectionHasError("payment") ? "border-red-600/50" : "border-zinc-700"} overflow-hidden`}>
-            <SectionHeader
-              sectionKey="payment"
-              title="Pagamento"
-              subtitle="Conta, cartão, forma de pagamento e observações (opcional)"
-            />
-            {openSections.payment && (
-              <div className="p-4 space-y-4">
+          {/* ── Passo 3: Pagamento ── */}
+          {step === 2 && (
+            <div className="space-y-4 py-1">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <Label>Conta Bancária</Label>
@@ -823,14 +817,13 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                   <Textarea placeholder="Informações adicionais..." value={form.notes}
                     onChange={(e) => setForm({ ...form, notes: e.target.value })} rows={3} />
                 </div>
-              </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         <DialogFooter className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-800">
-          {(() => {
-            // Zeigarnik + Goal-Gradient: mostra o que falta (ou "pronto") sem barra de etapas.
+          {/* Zeigarnik: no último passo mostra o que falta (ou "pronto"). */}
+          {step === STEPS.length - 1 && (() => {
             const missing = Object.keys(validate());
             if (missing.length === 0) {
               return (
@@ -839,8 +832,6 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                 </p>
               );
             }
-            const touched = Boolean(form.description.trim()) || form.amount > 0 || Object.keys(errors).length > 0;
-            if (!touched) return null;
             return (
               <p className="mr-auto flex items-center gap-1.5 text-xs text-amber-400">
                 <AlertCircle className="w-3.5 h-3.5" />
@@ -848,6 +839,10 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
               </p>
             );
           })()}
+          {/* Indicador de passo nas etapas iniciais. */}
+          {step < STEPS.length - 1 && (
+            <p className="mr-auto text-xs text-zinc-500">Passo {step + 1} de {STEPS.length}</p>
+          )}
           <Button
             type="button"
             variant="outline"
@@ -860,13 +855,25 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
           >
             Cancelar
           </Button>
-          <Button type="button" onClick={handleSubmit} disabled={loading}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white border-0 gap-2">
-            {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Salvando...</>
-              : isEditing ? "Salvar"
-              : form.isRecurring ? `Criar ${recurringMonths} Lançamentos`
-              : "Criar Lançamento"}
-          </Button>
+          {step > 0 && (
+            <Button type="button" variant="outline" onClick={goBack} className="gap-1.5">
+              <ChevronLeft className="w-4 h-4" /> Voltar
+            </Button>
+          )}
+          {step < STEPS.length - 1 ? (
+            <Button type="button" onClick={goNext}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white border-0 gap-1.5">
+              Próximo <ChevronRight className="w-4 h-4" />
+            </Button>
+          ) : (
+            <Button type="button" onClick={handleSubmit} disabled={loading}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white border-0 gap-2">
+              {loading ? <><Loader2 className="w-4 h-4 animate-spin" /> Salvando...</>
+                : isEditing ? "Salvar"
+                : form.isRecurring ? `Criar ${recurringMonths} Lançamentos`
+                : "Criar Lançamento"}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
