@@ -123,6 +123,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
   const [recurringMonths, setRecurringMonths] = useState("12");
   const [openEnded, setOpenEnded] = useState(false);
   const [dueDayOfMonth, setDueDayOfMonth] = useState("5");
+  const [recurrenceFrequency, setRecurrenceFrequency] = useState<"WEEKLY" | "BIWEEKLY" | "MONTHLY">("MONTHLY");
   const [categories, setCategories] = useState<Category[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -210,7 +211,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
         accountId: defaults.accountId ?? "",
         creditCardId: defaults.creditCardId ?? "",
       });
-      setRecurringMonths("12"); setDueDayOfMonth("5");
+      setRecurringMonths("12"); setDueDayOfMonth("5"); setRecurrenceFrequency("MONTHLY"); setOpenEnded(false);
       prevTypeRef.current = "EXPENSE";
       skipNextTypeApplyRef.current = true;
       // Check for draft (only NEW modal)
@@ -364,6 +365,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
         recurringMonths: openEnded ? 0 : (parseInt(recurringMonths) || 12),
         dueDayOfMonth: parseInt(dueDayOfMonth) || 5,
         openEnded,
+        recurrenceFrequency,
       }),
     };
 
@@ -652,63 +654,107 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                         <RefreshCw className={`w-4 h-4 ${form.isRecurring ? "text-indigo-400" : "text-zinc-500"}`} />
                         <div className="text-left">
                           <p className={`text-sm font-medium ${form.isRecurring ? "text-indigo-300" : "text-zinc-300"}`}>
-                            Pagamento Recorrente Mensal
+                            Pagamento Recorrente
                           </p>
-                          <p className="text-xs text-zinc-500">Salários, aluguel, assinaturas fixas</p>
+                          <p className="text-xs text-zinc-500">Semanal, quinzenal ou mensal — salários, aluguel, assinaturas</p>
                         </div>
                       </div>
                       <div className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${form.isRecurring ? "bg-indigo-600" : "bg-zinc-700"}`}>
                         <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${form.isRecurring ? "translate-x-5" : "translate-x-0.5"}`} />
                       </div>
                     </button>
-                    {form.isRecurring && (
-                      <div className="px-4 pb-4 border-t border-indigo-600/20 pt-3 grid grid-cols-2 gap-3">
+                    {form.isRecurring && (() => {
+                      // Rótulos por frequência (gênero correto em PT-BR).
+                      const isMonthly = recurrenceFrequency === "MONTHLY";
+                      const repeatLabel =
+                        recurrenceFrequency === "WEEKLY" ? "Repetir por quantas semanas"
+                        : recurrenceFrequency === "BIWEEKLY" ? "Repetir por quantas quinzenas"
+                        : "Repetir por quantos meses";
+                      const warnThreshold =
+                        recurrenceFrequency === "WEEKLY" ? 104
+                        : recurrenceFrequency === "BIWEEKLY" ? 52
+                        : 60;
+                      const count = parseInt(recurringMonths) || 0;
+                      // Estimativa de duração pra orientar semanal/quinzenal.
+                      const spanMonths = recurrenceFrequency === "WEEKLY"
+                        ? Math.round((count * 7) / 30)
+                        : recurrenceFrequency === "BIWEEKLY"
+                          ? Math.round((count * 14) / 30)
+                          : count;
+                      return (
+                      <div className="px-4 pb-4 border-t border-indigo-600/20 pt-3 space-y-3">
+                        {/* Frequência */}
                         <div className="space-y-1.5">
-                          <Label className="text-xs">Dia do vencimento (1–31)</Label>
-                          <Input type="number" min="1" max="31" placeholder="5" value={dueDayOfMonth}
-                            onChange={(e) => setDueDayOfMonth(e.target.value)} className="text-center" />
-                          <p className="text-xs text-zinc-600">
-                            Em meses sem o dia escolhido (ex: 31 em fevereiro), cai no último dia do mês.
-                            Se cair em sáb/dom, antecipa pra sexta.
-                          </p>
+                          <Label className="text-xs">Frequência</Label>
+                          <Select value={recurrenceFrequency} onValueChange={(v) => setRecurrenceFrequency(v as "WEEKLY" | "BIWEEKLY" | "MONTHLY")}>
+                            <SelectTrigger><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="WEEKLY">Semanal (a cada 7 dias)</SelectItem>
+                              <SelectItem value="BIWEEKLY">Quinzenal (a cada 14 dias)</SelectItem>
+                              <SelectItem value="MONTHLY">Mensal</SelectItem>
+                            </SelectContent>
+                          </Select>
                         </div>
-                        <div className="space-y-1.5">
-                          <div className="flex items-center justify-between">
-                            <Label className="text-xs">Repetir por quantos meses</Label>
-                            <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                              <input
-                                type="checkbox"
-                                checked={openEnded}
-                                onChange={(e) => setOpenEnded(e.target.checked)}
-                                className="w-3.5 h-3.5 accent-indigo-500"
-                              />
-                              <span className="text-xs text-zinc-400">Sem prazo</span>
-                            </label>
-                          </div>
-                          <Input
-                            type="number"
-                            min="1"
-                            max="600"
-                            placeholder="12"
-                            value={recurringMonths}
-                            onChange={(e) => setRecurringMonths(e.target.value)}
-                            disabled={openEnded}
-                            className={`text-center ${openEnded ? "opacity-40" : ""}`}
-                          />
-                          <p className="text-xs text-zinc-500">
-                            {openEnded
-                              ? <span className="text-violet-400 font-medium">Sem prazo definido — cancele manualmente quando quiser</span>
-                              : <><strong className="text-indigo-400">{recurringMonths} lançamentos</strong> pendentes serão criados</>
-                            }
-                            {!openEnded && (parseInt(recurringMonths) || 0) > 60 && (
-                              <span className="mt-1 block text-amber-400">
-                                Isso cria muitos lançamentos ({recurringMonths} meses). Confirme se é o esperado.
-                              </span>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          {isMonthly && (
+                            <div className="space-y-1.5">
+                              <Label className="text-xs">Dia do vencimento (1–31)</Label>
+                              <Input type="number" min="1" max="31" placeholder="5" value={dueDayOfMonth}
+                                onChange={(e) => setDueDayOfMonth(e.target.value)} className="text-center" />
+                              <p className="text-xs text-zinc-600">
+                                Em meses sem o dia escolhido (ex: 31 em fevereiro), cai no último dia do mês.
+                                Se cair em sáb/dom, antecipa pra sexta.
+                              </p>
+                            </div>
+                          )}
+                          <div className={`space-y-1.5 ${isMonthly ? "" : "col-span-2"}`}>
+                            <div className="flex items-center justify-between">
+                              <Label className="text-xs">{repeatLabel}</Label>
+                              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={openEnded}
+                                  onChange={(e) => setOpenEnded(e.target.checked)}
+                                  className="w-3.5 h-3.5 accent-indigo-500"
+                                />
+                                <span className="text-xs text-zinc-400">Sem prazo</span>
+                              </label>
+                            </div>
+                            <Input
+                              type="number"
+                              min="1"
+                              max="600"
+                              placeholder="12"
+                              value={recurringMonths}
+                              onChange={(e) => setRecurringMonths(e.target.value)}
+                              disabled={openEnded}
+                              className={`text-center ${openEnded ? "opacity-40" : ""}`}
+                            />
+                            <p className="text-xs text-zinc-500">
+                              {openEnded
+                                ? <span className="text-violet-400 font-medium">Sem prazo definido — cancele manualmente quando quiser</span>
+                                : <>
+                                    <strong className="text-indigo-400">{recurringMonths} lançamentos</strong> pendentes serão criados
+                                    {!isMonthly && count > 0 && spanMonths > 0 && <> (≈ {spanMonths} {spanMonths === 1 ? "mês" : "meses"})</>}
+                                  </>
+                              }
+                              {!openEnded && count > warnThreshold && (
+                                <span className="mt-1 block text-amber-400">
+                                  Isso cria muitos lançamentos. Confirme se é o esperado.
+                                </span>
+                              )}
+                            </p>
+                            {!isMonthly && (
+                              <p className="text-xs text-zinc-600">
+                                A partir do vencimento da 1ª parcela (ou da competência, se vazio). Se cair em sáb/dom, antecipa pra sexta.
+                              </p>
                             )}
-                          </p>
+                          </div>
                         </div>
                       </div>
-                    )}
+                      );
+                    })()}
                   </div>
                 )}
               </div>

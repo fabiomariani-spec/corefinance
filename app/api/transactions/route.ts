@@ -32,6 +32,7 @@ const transactionSchema = z.object({
   recurringMonths: z.number().optional(),
   dueDayOfMonth: z.number().optional(),
   openEnded: z.boolean().optional(),
+  recurrenceFrequency: z.enum(["WEEKLY", "BIWEEKLY", "MONTHLY"]).optional(),
 });
 
 export const GET = withAuth(async ({ companyId, req }) => {
@@ -243,16 +244,58 @@ export const POST = withAuth(async ({ companyId, req }) => {
   }
 
   // Strip recurring helpers before saving
-  const { recurringMonths, dueDayOfMonth, openEnded, ...txData } = data;
+  const { recurringMonths, dueDayOfMonth, openEnded, recurrenceFrequency, ...txData } = data;
 
-  // ── RECURRING: generate N monthly transactions ──
+  // ── RECURRING: generate N transactions per frequency ──
   if (data.isRecurring && (recurringMonths !== undefined || openEnded)) {
     const isOpenEnded = openEnded === true || recurringMonths === 0;
+    const freq = recurrenceFrequency ?? "MONTHLY";
+    const groupId = crypto.randomUUID();
+
+    // ── SEMANAL / QUINZENAL: intervalo fixo de dias a partir de uma âncora ──
+    // Âncora = vencimento da 1ª parcela (ou competência, se vazio). Cada
+    // ocorrência soma 7 (semanal) ou 14 (quinzenal) dias. `recurringMonths`
+    // reaproveita o mesmo input numérico, mas representa Nº de ocorrências.
+    if (freq === "WEEKLY" || freq === "BIWEEKLY") {
+      const intervalDays = freq === "WEEKLY" ? 7 : 14;
+      // Sem prazo: gera ~3 anos adiantado; com prazo, limita a um teto são.
+      const maxCount = freq === "WEEKLY" ? 520 : 260;
+      const defaultOpen = freq === "WEEKLY" ? 156 : 78;
+      const count = isOpenEnded ? defaultOpen : Math.min(recurringMonths ?? 12, maxCount);
+      // Meio-dia local pra evitar shift de UTC virar o dia anterior no BR.
+      const anchorStr = (txData.dueDate ?? data.competenceDate).slice(0, 10);
+      const anchor = new Date(anchorStr + "T12:00:00");
+
+      const transactions = Array.from({ length: count }, (_, i) => {
+        const occ = new Date(anchor);
+        occ.setDate(occ.getDate() + i * intervalDays);
+        // Se cair em fim de semana, antecipa pra sexta anterior.
+        const due = adjustToPreviousBusinessDay(occ);
+        return {
+          ...txData,
+          companyId,
+          status: "PENDING" as const,
+          competenceDate: occ,
+          dueDate: due,
+          paymentDate: null,
+          isRecurring: true,
+          recurrenceRule: isOpenEnded ? `${freq}_OPEN` : freq,
+          installmentGroupId: groupId,
+          installmentNumber: i + 1,
+          installmentTotal: isOpenEnded ? null : count,
+          paymentMethod: txData.paymentMethod as never ?? null,
+        };
+      });
+
+      await prisma.transaction.createMany({ data: transactions });
+      return NextResponse.json({ created: count, groupId, openEnded: isOpenEnded }, { status: 201 });
+    }
+
+    // ── MENSAL (padrão): uma transação por mês ──
     const months = isOpenEnded ? 120 : Math.min(recurringMonths ?? 12, 120);
     // Aceita 1-31. Em meses curtos (fev, abril etc) faz clamp pro último dia
     // do mês via `new Date(y, m+1, 0)` quando o dia escolhido excede o mês.
     const dayOfMonth = Math.min(Math.max(dueDayOfMonth ?? 5, 1), 31);
-    const groupId = crypto.randomUUID();
     const baseDate = new Date(data.competenceDate);
 
     const transactions = Array.from({ length: months }, (_, i) => {
