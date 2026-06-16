@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,6 +26,7 @@ import {
   PieChart,
   Receipt,
   ArrowUp,
+  ChevronDown,
 } from "lucide-react";
 import { startOfMonth, endOfMonth, startOfYear, format, subMonths, subDays, parseISO } from "date-fns";
 import { downloadSpreadsheet } from "@/lib/export";
@@ -202,13 +203,18 @@ export default function RelatoriosPage() {
     endOfMonth(new Date()).toISOString().split("T")[0]
   );
   const [loading, setLoading] = useState(false);
+  // Hick's Law: o range custom (2 date inputs) fica num accordion fechado por
+  // padrão. A maioria usa presets — só quem precisa de range exato expande.
+  const [customRangeOpen, setCustomRangeOpen] = useState(false);
   const [dreData, setDreData] = useState<DreReport | null>(null);
   const [revenueData, setRevenueData] = useState<RevenueReport | null>(null);
   const [detailedData, setDetailedData] = useState<DetailedReport | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const presets = buildPresets();
+  // Perf: presets eram reconstruídos (com `new Date()`) a cada render. Memoiza
+  // uma vez por sessão — o conjunto de presets não muda durante o uso.
+  const presets = useMemo(() => buildPresets(), []);
 
   async function fetchReport(signal: AbortSignal) {
     setLoading(true);
@@ -254,9 +260,10 @@ export default function RelatoriosPage() {
     setEndDate(p.end);
   }
 
-  const activePreset = presets.find(
-    (p) => p.start === startDate && p.end === endDate
-  )?.key;
+  const activePreset = useMemo(
+    () => presets.find((p) => p.start === startDate && p.end === endDate)?.key,
+    [presets, startDate, endDate]
+  );
 
   // ── CSV: DRE ───────────────────────────────────────────────────────────────
   // Formato planilha limpo: uma tabela só (categoria/valor/%) com totais no
@@ -393,27 +400,53 @@ export default function RelatoriosPage() {
             </div>
           </div>
 
-          {/* Datas custom */}
-          <div className="flex items-end gap-4 flex-wrap">
-            <div className="space-y-1.5">
-              <Label>Data Início</Label>
-              <Input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="w-40"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>Data Fim</Label>
-              <Input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="w-40"
-              />
-            </div>
-          </div>
+          {/* Período personalizado — accordion (Hick's Law: fechado por padrão).
+              Abre automaticamente quando o range em uso não bate com nenhum
+              preset, pra o usuário enxergar as datas custom selecionadas. */}
+          {(() => {
+            const expanded = customRangeOpen || !activePreset;
+            return (
+              <div className="border-t border-zinc-800 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setCustomRangeOpen((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs font-medium text-zinc-400 hover:text-zinc-200 transition-colors"
+                  aria-expanded={expanded}
+                >
+                  <Calendar className="w-3.5 h-3.5" />
+                  Período personalizado
+                  {!activePreset && (
+                    <span className="text-xs text-indigo-400">(ativo)</span>
+                  )}
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 transition-transform ${expanded ? "rotate-180" : ""}`}
+                  />
+                </button>
+                {expanded && (
+                  <div className="flex items-end gap-4 flex-wrap mt-3">
+                    <div className="space-y-1.5">
+                      <Label>Data Início</Label>
+                      <Input
+                        type="date"
+                        value={startDate}
+                        onChange={(e) => setStartDate(e.target.value)}
+                        className="w-40"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Data Fim</Label>
+                      <Input
+                        type="date"
+                        value={endDate}
+                        onChange={(e) => setEndDate(e.target.value)}
+                        className="w-40"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
 
         {/* ── DRE Report ──────────────────────────────────────────────────── */}

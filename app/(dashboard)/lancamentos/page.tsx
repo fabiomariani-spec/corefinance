@@ -1143,6 +1143,7 @@ export default function TransactionsPage() {
                           type="button"
                           onClick={handleQuickAdd}
                           disabled={!quickCanSave}
+                          aria-label="Adicionar lançamento rápido"
                           title={quickCanSave ? "Adicionar (Enter)" : "Preencha descrição e valor"}
                           className={`w-7 h-7 rounded-md flex items-center justify-center transition-colors ${
                             quickCanSave
@@ -1396,6 +1397,7 @@ export default function TransactionsPage() {
                   size="sm"
                   onClick={() => setPage((p) => Math.max(1, p - 1))}
                   disabled={page === 1}
+                  aria-label="Página anterior"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </Button>
@@ -1404,6 +1406,7 @@ export default function TransactionsPage() {
                   size="sm"
                   onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
                   disabled={page === totalPages}
+                  aria-label="Próxima página"
                 >
                   <ChevronRight className="w-4 h-4" />
                 </Button>

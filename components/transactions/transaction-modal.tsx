@@ -114,7 +114,7 @@ const EMPTY_FORM = {
 const FIELD_SECTION: Record<string, "data" | "classification" | "payment"> = {
   description: "data",
   amount: "data",
-  competenceDate: "classification",
+  competenceDate: "data",
 };
 
 // Stepper: passos do modal (Dados → Classificação → Pagamento)
@@ -146,6 +146,8 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
   const descriptionRef = useRef<HTMLInputElement>(null);
   const amountRef = useRef<HTMLInputElement>(null);
   const competenceRef = useRef<HTMLInputElement>(null);
+  // Container do conteúdo do passo — recebe foco ao trocar de passo (a11y).
+  const stepContentRef = useRef<HTMLDivElement>(null);
 
   // Propagation dialog: shown when editing a recurring transaction and category/dept changed
   const [showPropagateDialog, setShowPropagateDialog] = useState(false);
@@ -255,6 +257,17 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
     return () => window.clearTimeout(t);
   }, [form, open, isEditing, pendingDraft]);
 
+  // ── Foco ao trocar de passo (a11y) ──
+  // Sem isso, ao mudar `step` o foco caía no <body> e o leitor de tela /
+  // navegação por teclado perdia o contexto. Movemos o foco pro container do
+  // passo. No Passo 1 (abertura), o input de descrição tem autoFocus próprio —
+  // então só movemos foco pro container nos passos seguintes.
+  useEffect(() => {
+    if (!open) return;
+    if (step === 0) return; // deixa o autoFocus da descrição agir
+    stepContentRef.current?.focus();
+  }, [step, open]);
+
   function validate(): Record<string, string> {
     const newErrors: Record<string, string> = {};
     if (!form.description.trim()) newErrors.description = "Informe uma descrição";
@@ -293,8 +306,11 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
   // Goal-Gradient: marca o passo como concluído quando seus campos estão ok.
   function stepDone(stepIndex: number): boolean {
     const key = STEPS[stepIndex].key;
-    if (key === "data") return Boolean(form.description.trim() && form.amount > 0);
-    if (key === "classification") return Boolean(form.competenceDate);
+    // "Dados" agora inclui Competência (obrigatória) além de descrição + valor.
+    if (key === "data") return Boolean(form.description.trim() && form.amount > 0 && form.competenceDate);
+    // "Classificação" passou a ser totalmente opcional — marca como concluído
+    // quando o usuário definiu ao menos uma classificação.
+    if (key === "classification") return Boolean(form.categoryId || form.departmentId || form.employeeId);
     return Boolean(form.accountId || form.creditCardId || form.paymentMethod);
   }
 
@@ -453,6 +469,7 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                 <button
                   type="button"
                   onClick={() => setStep(i)}
+                  aria-current={active ? "step" : undefined}
                   className={`flex items-center gap-2 rounded-lg px-2 py-1.5 transition-colors ${active ? "bg-indigo-600/15" : "hover:bg-zinc-800/60"}`}
                 >
                   <span className={`flex items-center justify-center w-6 h-6 rounded-full text-xs font-semibold shrink-0 ${
@@ -474,7 +491,10 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
         </div>
 
         <div
-          className="flex-1 overflow-y-auto -mx-6 px-6 pt-1"
+          ref={stepContentRef}
+          tabIndex={-1}
+          aria-live="polite"
+          className="flex-1 overflow-y-auto -mx-6 px-6 pt-1 outline-none"
           onKeyDown={(e) => {
             // Flow/Doherty: salvar de qualquer campo sem tirar a mão do teclado.
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -566,46 +586,9 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                     </Select>
                   </div>
                 </div>
-            </div>
-          )}
 
-          {/* ── Passo 2: Classificação ── */}
-          {step === 1 && (
-            <div className="space-y-4 py-1">
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label>Categoria</Label>
-                    <Select value={form.categoryId} onValueChange={(v) => setForm({ ...form, categoryId: v })}>
-                      <SelectTrigger><SelectValue placeholder="Selecionar..." /></SelectTrigger>
-                      <SelectContent>
-                        {categories.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>Departamento</Label>
-                    <Select value={form.departmentId} onValueChange={(v) => setForm({ ...form, departmentId: v })}>
-                      <SelectTrigger><SelectValue placeholder="Selecionar..." /></SelectTrigger>
-                      <SelectContent>
-                        {departments.map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-
-                <div className="space-y-1.5">
-                  <Label>Colaborador (opcional)</Label>
-                  <SearchableSelect
-                    value={form.employeeId}
-                    onChange={(v) => setForm({ ...form, employeeId: v })}
-                    options={employees.map((e) => ({ value: e.id, label: e.name }))}
-                    placeholder="Selecionar colaborador..."
-                    allowEmpty
-                    emptyLabel="— Sem colaborador —"
-                  />
-                  <p className="text-xs text-zinc-500">Use pra atribuir esse lançamento a uma pessoa (ex: vale, bônus, reembolso)</p>
-                </div>
-
+                {/* Datas — movidas pro Passo 1 porque Competência é obrigatória:
+                    o usuário precisa vê-la antes de avançar. */}
                 <div className="space-y-1.5">
                   <p className="text-xs font-medium text-zinc-400">Datas</p>
                   <div className="grid grid-cols-3 gap-3">
@@ -645,6 +628,45 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                     />
                   </div>
                   </div>
+                </div>
+            </div>
+          )}
+
+          {/* ── Passo 2: Classificação ── */}
+          {step === 1 && (
+            <div className="space-y-4 py-1">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label>Categoria</Label>
+                    <Select value={form.categoryId} onValueChange={(v) => setForm({ ...form, categoryId: v })}>
+                      <SelectTrigger><SelectValue placeholder="Selecionar..." /></SelectTrigger>
+                      <SelectContent>
+                        {categories.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Departamento</Label>
+                    <Select value={form.departmentId} onValueChange={(v) => setForm({ ...form, departmentId: v })}>
+                      <SelectTrigger><SelectValue placeholder="Selecionar..." /></SelectTrigger>
+                      <SelectContent>
+                        {departments.map((d) => <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label>Colaborador (opcional)</Label>
+                  <SearchableSelect
+                    value={form.employeeId}
+                    onChange={(v) => setForm({ ...form, employeeId: v })}
+                    options={employees.map((e) => ({ value: e.id, label: e.name }))}
+                    placeholder="Selecionar colaborador..."
+                    allowEmpty
+                    emptyLabel="— Sem colaborador —"
+                  />
+                  <p className="text-xs text-zinc-500">Use pra atribuir esse lançamento a uma pessoa (ex: vale, bônus, reembolso)</p>
                 </div>
 
                 {!isEditing && (
@@ -815,7 +837,8 @@ export function TransactionModal({ open, onOpenChange, transaction, onSuccess }:
                 <div className="space-y-1.5">
                   <Label>Observações</Label>
                   <Textarea placeholder="Informações adicionais..." value={form.notes}
-                    onChange={(e) => setForm({ ...form, notes: e.target.value })} rows={3} />
+                    onChange={(e) => setForm({ ...form, notes: e.target.value })} rows={3} maxLength={500} />
+                  <p className="text-right text-xs text-zinc-500">{form.notes.length}/500</p>
                 </div>
             </div>
           )}

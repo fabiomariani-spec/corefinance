@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { Header } from "@/components/layout/header";
 import { formatCurrency, formatDate } from "@/lib/formatters";
 import {
@@ -23,6 +23,8 @@ import {
   isBefore,
   startOfWeek,
   endOfWeek,
+  startOfMonth,
+  endOfMonth,
 } from "date-fns";
 import { ptBR } from "date-fns/locale";
 import {
@@ -478,6 +480,9 @@ export default function FluxoCaixaPage() {
   const hasFetchedRef = useRef(false);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   // Filtro por range custom. Quando vazio, cai no `month` do header (mês atual).
+  // O sentinel vazio é mantido pra preservar a lógica de filtro (modo mês vs
+  // custom). A UI exibe o mês corrente como default (ver `pickerFrom/To`) pra
+  // não parecer que exige config (Lei de Tesler).
   const [dateFrom, setDateFrom] = useState<string>("");
   const [dateTo, setDateTo] = useState<string>("");
 
@@ -504,6 +509,12 @@ export default function FluxoCaixaPage() {
   }
 
   const hasCustomRange = Boolean(dateFrom && dateTo);
+
+  // Default exibido no picker quando não há range custom: mês corrente do
+  // Header. Mantém o sentinel vazio internamente (lógica de filtro intacta),
+  // mas mostra datas reais em vez de "Início → Fim" (Lei de Tesler).
+  const pickerFrom = dateFrom || format(startOfMonth(currentDate), "yyyy-MM-dd");
+  const pickerTo = dateTo || format(endOfMonth(currentDate), "yyyy-MM-dd");
 
   const fetchData = useCallback(() => {
     if (!hasFetchedRef.current) setLoading(true);
@@ -568,6 +579,65 @@ export default function FluxoCaixaPage() {
     : [];
   void projectionLabels; // used via tick formatter
 
+  // ── Extrato: saldo acumulado + ordenação (memoizado) ───────────────────────
+  // Perf P0: antes esses 2 sorts O(n log n) + o loop de saldo rodavam A CADA
+  // render (toda re-renderização da página). Agora só recalcula quando mudam as
+  // transações ou o critério/direção de ordenação. Mesma saída, só memoizada.
+  const { sortedTransactions, balanceMap } = useMemo(() => {
+    const txs = data?.monthTransactions ?? [];
+    // Saldo corrente sempre em ordem cronológica (consistência da coluna Saldo).
+    const chronological = [...txs].sort((a, b) => {
+      const dateA = new Date(a.paymentDate ?? a.dueDate ?? a.competenceDate).getTime();
+      const dateB = new Date(b.paymentDate ?? b.dueDate ?? b.competenceDate).getTime();
+      return dateA - dateB;
+    });
+    const map = new Map<string, number>();
+    let rb = 0;
+    for (const tx of chronological) {
+      if (tx.type === "INCOME") rb += tx.amount;
+      else rb -= tx.amount;
+      map.set(tx.id, rb);
+    }
+
+    const dirMul = sortDir === "asc" ? 1 : -1;
+    const cmpStr = (a: string, b: string) =>
+      a.localeCompare(b, "pt-BR", { sensitivity: "base" });
+    const txDate = (t: Transaction) =>
+      new Date(t.dueDate ?? t.paymentDate ?? t.competenceDate).getTime();
+    const txPayment = (t: Transaction) =>
+      t.paymentDate ? new Date(t.paymentDate).getTime() : Number.POSITIVE_INFINITY;
+
+    const sorted = [...chronological].sort((a, b) => {
+      switch (sortBy) {
+        case "date":
+          return (txDate(a) - txDate(b)) * dirMul;
+        case "payment":
+          return (txPayment(a) - txPayment(b)) * dirMul;
+        case "description":
+          return cmpStr(a.description, b.description) * dirMul;
+        case "category":
+          return cmpStr(a.category?.name ?? "", b.category?.name ?? "") * dirMul;
+        case "status":
+          return cmpStr(a.status, b.status) * dirMul;
+        case "income": {
+          const ai = a.type === "INCOME" ? a.amount : 0;
+          const bi = b.type === "INCOME" ? b.amount : 0;
+          return (ai - bi) * dirMul;
+        }
+        case "expense": {
+          const ax = a.type === "EXPENSE" ? a.amount : 0;
+          const bx = b.type === "EXPENSE" ? b.amount : 0;
+          return (ax - bx) * dirMul;
+        }
+        case "balance":
+          return ((map.get(a.id) ?? 0) - (map.get(b.id) ?? 0)) * dirMul;
+        default:
+          return 0;
+      }
+    });
+    return { sortedTransactions: sorted, balanceMap: map };
+  }, [data?.monthTransactions, sortBy, sortDir]);
+
   return (
     <>
       <Header
@@ -584,8 +654,8 @@ export default function FluxoCaixaPage() {
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-3 flex-wrap">
             <DateRangePicker
-              from={dateFrom}
-              to={dateTo}
+              from={pickerFrom}
+              to={pickerTo}
               onChange={(f, t) => {
                 setDateFrom(f);
                 setDateTo(t);
@@ -626,7 +696,11 @@ export default function FluxoCaixaPage() {
         </div>
 
         {/* ── 1. Painel de Liquidez ─────────────────────────────────────── */}
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <div
+          className={`grid grid-cols-2 lg:grid-cols-5 gap-3 ${
+            refetching ? "opacity-50 pointer-events-none transition-opacity" : "transition-opacity"
+          }`}
+        >
 
           {/* Saldo em Caixa */}
           <div className="col-span-2 lg:col-span-1 bg-zinc-900 border border-zinc-800 rounded-xl p-4">
@@ -877,6 +951,12 @@ export default function FluxoCaixaPage() {
               </span>
             )}
           </div>
+          {!loading && (!data || data.projection.length === 0) ? (
+            <div className="flex flex-col items-center justify-center text-zinc-600" style={{ height: 220 }}>
+              <BarChart3 className="w-8 h-8 mb-2 opacity-40" />
+              <p className="text-sm">Sem dados de projeção no período</p>
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height={220}>
             <AreaChart
               data={data?.projection ?? []}
@@ -937,6 +1017,7 @@ export default function FluxoCaixaPage() {
               />
             </AreaChart>
           </ResponsiveContainer>
+          )}
         </div>
 
         {/* ── 4. Resumo do Mês ──────────────────────────────────────────── */}
@@ -1120,6 +1201,15 @@ export default function FluxoCaixaPage() {
           <h3 className="text-sm font-semibold text-zinc-100 mb-4">
             Entradas e Saídas por Dia
           </h3>
+          {!loading &&
+          (!data ||
+            data.dailyData.length === 0 ||
+            data.dailyData.every((d) => d.income === 0 && d.expenses === 0)) ? (
+            <div className="flex flex-col items-center justify-center text-zinc-600" style={{ height: 200 }}>
+              <BarChart3 className="w-8 h-8 mb-2 opacity-40" />
+              <p className="text-sm">Sem movimentações no período</p>
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height={200}>
             <BarChart
               data={data?.dailyData ?? []}
@@ -1150,10 +1240,25 @@ export default function FluxoCaixaPage() {
                 }}
               />
               <Legend wrapperStyle={{ fontSize: 11, color: "#a1a1aa" }} />
+              {/* Daltonismo: além de verde/vermelho, diferencia por textura —
+                  Entradas sólida, Saídas com hachura diagonal. */}
+              <defs>
+                <pattern
+                  id="expenseHatch"
+                  patternUnits="userSpaceOnUse"
+                  width={6}
+                  height={6}
+                  patternTransform="rotate(45)"
+                >
+                  <rect width={6} height={6} fill="#ef4444" />
+                  <line x1={0} y1={0} x2={0} y2={6} stroke="#7f1d1d" strokeWidth={2.5} />
+                </pattern>
+              </defs>
               <Bar dataKey="income" name="Entradas" fill="#10b981" radius={[2, 2, 0, 0]} />
-              <Bar dataKey="expenses" name="Saídas" fill="#ef4444" radius={[2, 2, 0, 0]} />
+              <Bar dataKey="expenses" name="Saídas" fill="url(#expenseHatch)" stroke="#ef4444" strokeWidth={0.5} radius={[2, 2, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
+          )}
         </div>
 
         {/* ── 6. A Receber ─────────────────────────────────────────────── */}
@@ -1380,59 +1485,8 @@ export default function FluxoCaixaPage() {
                       OVERDUE: "Atrasado",
                       PREDICTED: "Previsto",
                     };
-                    // Sempre calcular o saldo corrente em ordem cronológica
-                    // (para que "Saldo" seja consistente), depois aplicar o
-                    // sort do usuário sobre as linhas já enriquecidas.
-                    const chronological = [...data.monthTransactions].sort((a, b) => {
-                      const dateA = new Date(a.paymentDate ?? a.dueDate ?? a.competenceDate).getTime();
-                      const dateB = new Date(b.paymentDate ?? b.dueDate ?? b.competenceDate).getTime();
-                      return dateA - dateB;
-                    });
-                    const balanceMap = new Map<string, number>();
-                    let rb = 0;
-                    for (const tx of chronological) {
-                      if (tx.type === "INCOME") rb += tx.amount;
-                      else rb -= tx.amount;
-                      balanceMap.set(tx.id, rb);
-                    }
-
-                    const dirMul = sortDir === "asc" ? 1 : -1;
-                    const cmpStr = (a: string, b: string) =>
-                      a.localeCompare(b, "pt-BR", { sensitivity: "base" });
-                    const txDate = (t: Transaction) =>
-                      new Date(t.dueDate ?? t.paymentDate ?? t.competenceDate).getTime();
-                    const txPayment = (t: Transaction) =>
-                      t.paymentDate ? new Date(t.paymentDate).getTime() : Number.POSITIVE_INFINITY;
-
-                    const sorted = [...chronological].sort((a, b) => {
-                      switch (sortBy) {
-                        case "date":
-                          return (txDate(a) - txDate(b)) * dirMul;
-                        case "payment":
-                          return (txPayment(a) - txPayment(b)) * dirMul;
-                        case "description":
-                          return cmpStr(a.description, b.description) * dirMul;
-                        case "category":
-                          return cmpStr(a.category?.name ?? "", b.category?.name ?? "") * dirMul;
-                        case "status":
-                          return cmpStr(a.status, b.status) * dirMul;
-                        case "income": {
-                          const ai = a.type === "INCOME" ? a.amount : 0;
-                          const bi = b.type === "INCOME" ? b.amount : 0;
-                          return (ai - bi) * dirMul;
-                        }
-                        case "expense": {
-                          const ax = a.type === "EXPENSE" ? a.amount : 0;
-                          const bx = b.type === "EXPENSE" ? b.amount : 0;
-                          return (ax - bx) * dirMul;
-                        }
-                        case "balance":
-                          return ((balanceMap.get(a.id) ?? 0) - (balanceMap.get(b.id) ?? 0)) * dirMul;
-                        default:
-                          return 0;
-                      }
-                    });
-                    return sorted.map((tx) => {
+                    // Saldo + ordenação vêm memoizados (ver useMemo no topo).
+                    return sortedTransactions.map((tx) => {
                       runningBalance = balanceMap.get(tx.id) ?? 0;
                       return (
                         <tr

@@ -195,32 +195,55 @@ export default function FaturasPage() {
   async function handleConfirm(summaryOnly = false) {
     if (!result) return;
     setConfirming(true);
+    setError(null);
 
-    const res = await fetch("/api/invoices/confirm", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        creditCardId: selectedCard,
-        referenceMonth: result.referenceMonth ?? new Date().toISOString().slice(0, 7),
-        dueDate: editDueDate || result.dueDate,
-        paymentDate: editPaymentDate || null,
-        totalAmount: result.totalAmount,
-        items: summaryOnly ? [] : items,
-        summaryOnly,
-      }),
-    });
+    try {
+      const res = await fetch("/api/invoices/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          creditCardId: selectedCard,
+          referenceMonth: result.referenceMonth ?? new Date().toISOString().slice(0, 7),
+          dueDate: editDueDate || result.dueDate,
+          paymentDate: editPaymentDate || null,
+          totalAmount: result.totalAmount,
+          items: summaryOnly ? [] : items,
+          summaryOnly,
+        }),
+      });
 
-    if (res.ok) {
-      const data = await res.json();
+      // Fluxo financeiro crítico: não engolir falha. Sucesso avança pro "done";
+      // qualquer erro mantém o user na revisão com mensagem acionável.
+      let data: { invoiceId?: string; transactionsCreated?: number; skippedDuplicates?: number; error?: string } = {};
+      try {
+        data = await res.json();
+      } catch {
+        /* corpo vazio / não-JSON — tratado abaixo pelo res.ok */
+      }
+
+      if (!res.ok || data.error) {
+        setError(
+          data.error ||
+            `Não foi possível confirmar a importação (erro ${res.status}). Os lançamentos NÃO foram salvos — revise e tente de novo.`
+        );
+        return; // permanece no step "review", seleção/edições preservadas
+      }
+
       setConfirmed({
-        invoiceId: data.invoiceId,
-        created: data.transactionsCreated,
-        skipped: data.skippedDuplicates,
+        invoiceId: data.invoiceId!,
+        created: data.transactionsCreated ?? 0,
+        skipped: data.skippedDuplicates ?? 0,
       });
       setStep("done");
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? `Falha ao confirmar: ${err.message}. Verifique a conexão — os lançamentos NÃO foram salvos.`
+          : "Falha ao confirmar a importação. Os lançamentos NÃO foram salvos — tente novamente."
+      );
+    } finally {
+      setConfirming(false);
     }
-
-    setConfirming(false);
   }
 
   // Extract merchant key for fuzzy matching: "MERCADOLIVRE*FOTOCENT" → "mercadolivre"
@@ -994,6 +1017,15 @@ export default function FaturasPage() {
                 </table>
               </div>
             </div>
+
+            {/* Erro na confirmação — fluxo financeiro crítico, fica visível
+                na própria revisão sem perder as edições/seleção do usuário. */}
+            {error && (
+              <div className="flex items-start gap-2 p-4 rounded-lg bg-red-950/50 border border-red-900 text-red-400 text-sm">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{error}</span>
+              </div>
+            )}
 
             {/* Actions */}
             <div className="flex items-center justify-between">

@@ -6,21 +6,7 @@ import { KpiCard } from "@/components/dashboard/kpi-card";
 import { formatCurrency, formatPercent, formatVariation } from "@/lib/formatters";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import {
-  AreaChart,
-  Area,
-  PieChart,
-  Pie,
-  Cell,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  Legend,
-} from "recharts";
+import dynamic from "next/dynamic";
 import {
   Landmark,
   Flame,
@@ -40,12 +26,35 @@ import {
   Sparkles,
   Loader2,
   RotateCcw,
+  ArrowUp,
+  ArrowDown,
+  Minus,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
 import Link from "next/link";
 import { ExternalLink } from "lucide-react";
 import { useAutoRefresh } from "@/lib/use-auto-refresh";
+
+// Gráficos (recharts) carregados só no client via dynamic import — tira ~150-180KB
+// do first-load bundle. ssr:false porque os gráficos só aparecem após o fetch dos dados.
+const chartFallback = (h: number) => {
+  const ChartFallback = () => <div className="skeleton rounded-lg" style={{ height: h }} />;
+  ChartFallback.displayName = "ChartFallback";
+  return ChartFallback;
+};
+const IncomeCategoryDonut = dynamic(
+  () => import("@/components/dashboard/painel-charts").then((m) => m.IncomeCategoryDonut),
+  { ssr: false, loading: chartFallback(140) }
+);
+const ChurnTrendChart = dynamic(
+  () => import("@/components/dashboard/painel-charts").then((m) => m.ChurnTrendChart),
+  { ssr: false, loading: chartFallback(130) }
+);
+const CashFlowChart = dynamic(
+  () => import("@/components/dashboard/painel-charts").then((m) => m.CashFlowChart),
+  { ssr: false, loading: chartFallback(220) }
+);
 
 const CHART_COLORS = [
   "#6366f1", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6",
@@ -99,54 +108,6 @@ interface DashboardData {
     customerChurnRate: number;
     revenueChurnRate: number;
   }[];
-}
-
-function TooltipBRL({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: { name: string; value: number; color: string }[];
-  label?: string;
-}) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="bg-zinc-800 border border-zinc-700 rounded-lg p-3 shadow-xl text-xs">
-      <p className="text-zinc-400 mb-2 font-medium">{label}</p>
-      {payload.map((p, i) => (
-        <div key={i} className="flex items-center gap-2 mb-1">
-          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
-          <span className="text-zinc-300">{p.name}:</span>
-          <span className="text-zinc-100 font-semibold">{formatCurrency(p.value)}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function TooltipPct({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: { name: string; value: number; color: string }[];
-  label?: string;
-}) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="bg-zinc-800 border border-zinc-700 rounded-lg p-3 shadow-xl text-xs">
-      <p className="text-zinc-400 mb-2 font-medium">{label}</p>
-      {payload.map((p, i) => (
-        <div key={i} className="flex items-center gap-2 mb-1">
-          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: p.color }} />
-          <span className="text-zinc-300">{p.name}:</span>
-          <span className="text-zinc-100 font-semibold">{formatPercent(p.value)}</span>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 // ── Simple inline Markdown renderer ──────────────────────────────────────────
@@ -351,6 +312,14 @@ export default function DashboardPage() {
     if (rate < 5) return "bg-amber-600/10 border-amber-600/20";
     return "bg-red-600/10 border-red-600/20";
   }
+  // Ícone de severidade do churn — não depende só de cor (acessível a daltônicos).
+  // Cada faixa tem um formato distinto: saudável → ArrowDown (baixo/bom),
+  // atenção → Minus (estável/alerta), crítico → ArrowUp (alto/ruim).
+  function ChurnTrendIcon({ rate, className }: { rate: number; className?: string }) {
+    if (rate < 2) return <ArrowDown className={className} aria-label="Churn baixo (saudável)" />;
+    if (rate < 5) return <Minus className={className} aria-label="Churn em alerta" />;
+    return <ArrowUp className={className} aria-label="Churn crítico" />;
+  }
 
   function monthLabel(iso: string, fmt = "MMM") {
     try { return format(new Date(iso), fmt, { locale: ptBR }); }
@@ -485,10 +454,11 @@ export default function DashboardPage() {
         )}
 
         {/* ═══════════════════════════════════════════════
-            RESULTADO FINANCEIRO — Receita / Despesas / Lucro / Margem
+            REGIÃO 1 — SAÚDE FINANCEIRA
+            Receita / Despesas / Lucro / Margem
         ═══════════════════════════════════════════════ */}
         <div>
-          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">Resultado Financeiro</p>
+          <h2 className="text-sm font-medium text-zinc-400 mb-3">Saúde Financeira</h2>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           {/* Receita */}
           <Link
@@ -573,10 +543,11 @@ export default function DashboardPage() {
         </div>
 
         {/* ═══════════════════════════════════════════════
-            LINHA 1 — Cards principais
+            REGIÃO 2 — POSIÇÃO DE CAIXA
+            Caixa Atual / Burn Rate / Runway
         ═══════════════════════════════════════════════ */}
         <div>
-          <p className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">Indicadores Operacionais</p>
+          <h2 className="text-sm font-medium text-zinc-400 mb-3">Posição de Caixa</h2>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
 
           {/* Caixa Atual */}
@@ -687,6 +658,17 @@ export default function DashboardPage() {
             </div>
           </Link>
 
+          </div>
+        </div>
+
+        {/* ═══════════════════════════════════════════════
+            REGIÃO 3 — EFICIÊNCIA
+            Receita por Funcionário
+        ═══════════════════════════════════════════════ */}
+        <div>
+          <h2 className="text-sm font-medium text-zinc-400 mb-3">Eficiência</h2>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+
           {/* Revenue per Employee */}
           <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 flex flex-col gap-3 hover:border-zinc-700 transition-colors">
             <div className="flex items-start justify-between">
@@ -777,42 +759,10 @@ export default function DashboardPage() {
               <div className="flex gap-4 items-start">
                 {/* Donut */}
                 <div className="shrink-0">
-                  <ResponsiveContainer width={140} height={140}>
-                    <PieChart>
-                      <Pie
-                        data={data!.byIncomeCategory}
-                        dataKey="amount"
-                        nameKey="name"
-                        innerRadius={42}
-                        outerRadius={65}
-                        paddingAngle={3}
-                        startAngle={90}
-                        endAngle={-270}
-                      >
-                        {data!.byIncomeCategory.map((entry, i) => (
-                          <Cell
-                            key={i}
-                            fill={entry.color || CHART_COLORS[i % CHART_COLORS.length]}
-                          />
-                        ))}
-                      </Pie>
-                      <Tooltip
-                        content={({ active, payload }) =>
-                          active && payload?.length ? (
-                            <div className="bg-zinc-800 border border-zinc-700 rounded-lg p-2 text-xs shadow-xl">
-                              <p className="text-zinc-100 font-medium">{payload[0].name}</p>
-                              <p className="text-zinc-300">{formatCurrency(Number(payload[0].value))}</p>
-                              <p className="text-zinc-500">
-                                {totalIncomeCategory > 0
-                                  ? formatPercent((Number(payload[0].value) / totalIncomeCategory) * 100)
-                                  : "0%"}
-                              </p>
-                            </div>
-                          ) : null
-                        }
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
+                  <IncomeCategoryDonut
+                    data={data!.byIncomeCategory}
+                    totalIncomeCategory={totalIncomeCategory}
+                  />
                 </div>
                 {/* Ranking */}
                 <div className="flex-1 space-y-2.5 overflow-auto max-h-[160px] pr-1">
@@ -963,7 +913,8 @@ export default function DashboardPage() {
                 <div className="grid grid-cols-2 gap-3 mb-4">
                   <div className={`border rounded-xl p-3 ${churnCardBg(data?.churn.customerChurnRate ?? 0)}`}>
                     <p className="text-xs text-zinc-400 mb-1">Churn de Clientes</p>
-                    <p className={`text-xl font-bold ${churnTextColor(data?.churn.customerChurnRate ?? 0)}`}>
+                    <p className={`text-xl font-bold flex items-center gap-1.5 ${churnTextColor(data?.churn.customerChurnRate ?? 0)}`}>
+                      <ChurnTrendIcon rate={data?.churn.customerChurnRate ?? 0} className="w-4 h-4 shrink-0" />
                       {formatPercent(data?.churn.customerChurnRate ?? 0)}
                     </p>
                     <p className="text-xs text-zinc-500 mt-0.5">
@@ -972,54 +923,20 @@ export default function DashboardPage() {
                   </div>
                   <div className={`border rounded-xl p-3 ${churnCardBg(data?.churn.revenueChurnRate ?? 0)}`}>
                     <p className="text-xs text-zinc-400 mb-1">Churn de Receita</p>
-                    <p className={`text-xl font-bold ${churnTextColor(data?.churn.revenueChurnRate ?? 0)}`}>
+                    <p className={`text-xl font-bold flex items-center gap-1.5 ${churnTextColor(data?.churn.revenueChurnRate ?? 0)}`}>
+                      <ChurnTrendIcon rate={data?.churn.revenueChurnRate ?? 0} className="w-4 h-4 shrink-0" />
                       {formatPercent(data?.churn.revenueChurnRate ?? 0)}
                     </p>
                     <p className="text-xs text-zinc-500 mt-0.5">Receita perdida no período</p>
                   </div>
                 </div>
 
-                <ResponsiveContainer width="100%" height={130}>
-                  <LineChart
-                    data={(data?.churnTrend12m ?? []).map((m) => ({
-                      ...m,
-                      label: monthLabel(m.month),
-                    }))}
-                    margin={{ top: 5, right: 5, bottom: 0, left: -20 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                    <XAxis
-                      dataKey="label"
-                      tick={{ fill: "#71717a", fontSize: 10 }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
-                    <YAxis
-                      tick={{ fill: "#71717a", fontSize: 10 }}
-                      axisLine={false}
-                      tickLine={false}
-                      tickFormatter={(v) => `${Number(v).toFixed(0)}%`}
-                    />
-                    <Tooltip content={<TooltipPct />} />
-                    <Legend wrapperStyle={{ fontSize: 10, color: "#a1a1aa" }} />
-                    <Line
-                      type="monotone"
-                      dataKey="customerChurnRate"
-                      name="Clientes"
-                      stroke="#8b5cf6"
-                      strokeWidth={2}
-                      dot={false}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="revenueChurnRate"
-                      name="Receita"
-                      stroke="#ef4444"
-                      strokeWidth={2}
-                      dot={false}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
+                <ChurnTrendChart
+                  data={(data?.churnTrend12m ?? []).map((m) => ({
+                    ...m,
+                    label: monthLabel(m.month),
+                  }))}
+                />
 
                 <p className="text-xs text-zinc-600 mt-2 text-center">
                   * Baseado em contatos vinculados a lançamentos de receita
@@ -1037,70 +954,12 @@ export default function DashboardPage() {
             {loading ? (
               <div className="h-56 skeleton rounded-lg" />
             ) : (
-              <ResponsiveContainer width="100%" height={220}>
-                <AreaChart
-                  data={(data?.monthlyTrend ?? []).map((m) => ({
-                    ...m,
-                    label: monthLabel(m.month, "MMM/yy"),
-                  }))}
-                  margin={{ top: 5, right: 5, bottom: 0, left: -10 }}
-                >
-                  <defs>
-                    <linearGradient id="gIncome" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="gExpenses" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#ef4444" stopOpacity={0.3} />
-                      <stop offset="95%" stopColor="#ef4444" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" />
-                  <XAxis
-                    dataKey="label"
-                    tick={{ fill: "#71717a", fontSize: 10 }}
-                    axisLine={false}
-                    tickLine={false}
-                  />
-                  <YAxis
-                    tick={{ fill: "#71717a", fontSize: 10 }}
-                    axisLine={false}
-                    tickLine={false}
-                    tickFormatter={(v) => {
-                      if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
-                      if (v >= 1_000) return `${(v / 1_000).toFixed(0)}k`;
-                      return String(v);
-                    }}
-                  />
-                  <Tooltip content={<TooltipBRL />} />
-                  <Legend wrapperStyle={{ fontSize: 11, color: "#a1a1aa" }} />
-                  <Area
-                    type="monotone"
-                    dataKey="income"
-                    name="Receita"
-                    stroke="#10b981"
-                    strokeWidth={2}
-                    fill="url(#gIncome)"
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="expenses"
-                    name="Despesas"
-                    stroke="#ef4444"
-                    strokeWidth={2}
-                    fill="url(#gExpenses)"
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="profit"
-                    name="Resultado"
-                    stroke="#6366f1"
-                    strokeWidth={2}
-                    fill="none"
-                    strokeDasharray="4 2"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
+              <CashFlowChart
+                data={(data?.monthlyTrend ?? []).map((m) => ({
+                  ...m,
+                  label: monthLabel(m.month, "MMM/yy"),
+                }))}
+              />
             )}
           </div>
         </div>

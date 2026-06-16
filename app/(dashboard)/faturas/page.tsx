@@ -249,8 +249,17 @@ export default function FaturasListPage() {
               return (
                 <div
                   key={inv.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Abrir fatura ${inv.creditCard.name} · ${formatReferenceMonth(inv.referenceMonth)} · ${formatCurrency(inv.totalAmount)}`}
                   onClick={() => router.push(`/faturas/${inv.id}`)}
-                  className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 cursor-pointer hover:border-zinc-600 transition-colors group"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      router.push(`/faturas/${inv.id}`);
+                    }
+                  }}
+                  className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 cursor-pointer hover:border-zinc-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:border-indigo-500 transition-colors group"
                 >
                   <div className="flex items-start justify-between gap-4 flex-wrap">
                     <div className="flex items-center gap-4 flex-1 min-w-0">

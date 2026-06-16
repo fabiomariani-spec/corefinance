@@ -26,7 +26,9 @@ import {
 import { useState, useEffect } from "react";
 import { useNavigationProgress } from "@/components/layout/navigation-progress";
 
-const groups = [
+// Spec de navegação compartilhada entre a sidebar (desktop) e o drawer mobile.
+// Fonte única de verdade das rotas — não duplicar essa lista em outro lugar.
+export const navGroups = [
   {
     label: "Financeiro",
     icon: TrendingUp,
@@ -59,7 +61,7 @@ const groups = [
   },
 ];
 
-const bottomItems = [
+export const bottomItems = [
   { label: "Configurações", href: "/configuracoes", icon: Settings },
 ];
 
@@ -69,12 +71,17 @@ const ALLOWED_PATHS: Partial<Record<UserRole, Set<string>>> = {
   EVENTS_ONLY: new Set(["/eventos"]),
 };
 
-function filterGroupsByRole(role: UserRole) {
+export function filterGroupsByRole(role: UserRole) {
   const allowed = ALLOWED_PATHS[role];
-  if (!allowed) return groups;
-  return groups
+  if (!allowed) return navGroups;
+  return navGroups
     .map((g) => ({ ...g, items: g.items.filter((it) => allowed.has(it.href)) }))
     .filter((g) => g.items.length > 0);
+}
+
+// Helper de "rota ativa" compartilhado. "/" só casa exato; demais casam por prefixo.
+export function isPathActive(pathname: string, href: string) {
+  return pathname === href || (href !== "/" && pathname.startsWith(href));
 }
 
 export function Sidebar({ role = "ADMIN" }: { role?: UserRole }) {
@@ -90,11 +97,7 @@ export function Sidebar({ role = "ADMIN" }: { role?: UserRole }) {
 
   // Determine which group contains the active route
   const activeGroupIndex = visibleGroups.findIndex((g) =>
-    g.items.some(
-      (item) =>
-        pathname === item.href ||
-        (item.href !== "/" && pathname.startsWith(item.href))
-    )
+    g.items.some((item) => isPathActive(pathname, item.href))
   );
 
   const [openGroups, setOpenGroups] = useState<boolean[]>(() =>
@@ -118,7 +121,8 @@ export function Sidebar({ role = "ADMIN" }: { role?: UserRole }) {
   return (
     <aside
       className={cn(
-        "flex flex-col h-screen bg-zinc-900 border-r border-zinc-800 transition-all duration-300 shrink-0",
+        // Escondida em < md (drawer assume no mobile); idêntica em >= md.
+        "hidden md:flex flex-col h-screen bg-zinc-900 border-r border-zinc-800 transition-all duration-300 shrink-0",
         collapsed ? "w-[60px]" : "w-[220px]"
       )}
     >
@@ -143,10 +147,8 @@ export function Sidebar({ role = "ADMIN" }: { role?: UserRole }) {
       <nav className="flex-1 px-2 py-4 space-y-1 overflow-y-auto">
         {visibleGroups.map((group, gi) => {
           const GroupIcon = group.icon;
-          const isGroupActive = group.items.some(
-            (item) =>
-              pathname === item.href ||
-              (item.href !== "/" && pathname.startsWith(item.href))
+          const isGroupActive = group.items.some((item) =>
+            isPathActive(pathname, item.href)
           );
           const isOpen = openGroups[gi];
 
@@ -183,14 +185,13 @@ export function Sidebar({ role = "ADMIN" }: { role?: UserRole }) {
                 <div className="mt-0.5 ml-3 pl-3 border-l border-zinc-800 space-y-0.5">
                   {group.items.map((item) => {
                     const Icon = item.icon;
-                    const isActive =
-                      pathname === item.href ||
-                      (item.href !== "/" && pathname.startsWith(item.href));
+                    const isActive = isPathActive(pathname, item.href);
                     return (
                       <Link
                         key={item.href}
                         href={item.href}
                         prefetch={false}
+                        aria-current={isActive ? "page" : undefined}
                         onClick={() => handleNavClick(item.href)}
                         className={cn(
                           "flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm transition-all duration-150",
@@ -212,14 +213,13 @@ export function Sidebar({ role = "ADMIN" }: { role?: UserRole }) {
                 <div className="mt-0.5 space-y-0.5">
                   {group.items.map((item) => {
                     const Icon = item.icon;
-                    const isActive =
-                      pathname === item.href ||
-                      (item.href !== "/" && pathname.startsWith(item.href));
+                    const isActive = isPathActive(pathname, item.href);
                     return (
                       <Link
                         key={item.href}
                         href={item.href}
                         title={item.label}
+                        aria-current={isActive ? "page" : undefined}
                         onClick={() => handleNavClick(item.href)}
                         className={cn(
                           "flex justify-center px-3 py-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] items-center",
@@ -250,6 +250,7 @@ export function Sidebar({ role = "ADMIN" }: { role?: UserRole }) {
               href={item.href}
               prefetch={false}
               title={collapsed ? item.label : undefined}
+              aria-current={isActive ? "page" : undefined}
               onClick={() => handleNavClick(item.href)}
               className={cn(
                 "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all",

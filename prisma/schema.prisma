@@ -279,6 +279,11 @@ model Transaction {
   @@index([companyId, status, dueDate])
   @@index([companyId, departmentId, status])
   @@index([companyId, employeeId])
+  @@index([companyId, categoryId])
+  @@index([companyId, accountId])
+  @@index([companyId, contactId])
+  @@index([companyId, creditCardId])
+  @@index([companyId, installmentGroupId])
   @@map("transactions")
 }
 
@@ -344,6 +349,8 @@ model CreditCardInvoice {
   creditCard CreditCard    @relation(fields: [creditCardId], references: [id])
   items      InvoiceItem[]
 
+  @@index([companyId])
+  @@index([companyId, creditCardId])
   @@map("credit_card_invoices")
 }
 

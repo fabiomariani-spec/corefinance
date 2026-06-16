@@ -232,8 +232,20 @@ export default function ContasPage() {
               return (
                 <div
                   key={acc.id}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Ver lançamentos da conta ${acc.name}`}
                   onClick={() => navigateToTransactions(acc.id)}
-                  className="relative bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4 hover:border-indigo-500/40 transition-colors cursor-pointer"
+                  onKeyDown={(e) => {
+                    // Não interceptar quando o foco está num controle interno
+                    // (input de nome, botões) — eles têm seu próprio handler.
+                    if (e.target !== e.currentTarget) return;
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      navigateToTransactions(acc.id);
+                    }
+                  }}
+                  className="relative bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4 hover:border-indigo-500/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:border-indigo-500/40 transition-colors cursor-pointer"
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3 min-w-0">
@@ -306,10 +318,10 @@ export default function ContasPage() {
                         e.stopPropagation();
                         openEdit(acc);
                       }}
-                      className="p-1.5 rounded-md hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 shrink-0"
+                      className="h-9 w-9 flex items-center justify-center rounded-md hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 shrink-0"
                       aria-label="Editar conta"
                     >
-                      <Pencil className="w-3.5 h-3.5" />
+                      <Pencil className="w-4 h-4" />
                     </button>
                   </div>
 
@@ -331,11 +343,11 @@ export default function ContasPage() {
                           e.stopPropagation();
                           openBalancePopover(acc);
                         }}
-                        className="p-1 rounded-md hover:bg-zinc-800 text-zinc-500 hover:text-indigo-300 transition"
+                        className="h-9 w-9 flex items-center justify-center rounded-md hover:bg-zinc-800 text-zinc-500 hover:text-indigo-300 transition"
                         aria-label="Ajustar saldo"
                         title="Ajustar saldo"
                       >
-                        <Pencil className="w-3 h-3" />
+                        <Pencil className="w-4 h-4" />
                       </button>
                     </div>
 
