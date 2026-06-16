@@ -45,6 +45,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
   const categoryId = searchParams.get("categoryId");
   const departmentId = searchParams.get("departmentId");
   const employeeId = searchParams.get("employeeId");
+  const accountId = searchParams.get("accountId");
   const startDate = searchParams.get("startDate");
   const endDate = searchParams.get("endDate");
   const month = searchParams.get("month"); // "YYYY-MM"
@@ -88,6 +89,11 @@ export const GET = withAuth(async ({ companyId, req }) => {
   if (dateFilter) {
     baseWhere.OR = dateFilter;
   }
+
+  // Breakdown "quanto saiu por banco": despesas pagas por conta, respeitando
+  // todos os filtros MENOS o de conta (pra sempre comparar os bancos entre si).
+  const byAccountWhere = { ...baseWhere, type: "EXPENSE" as const, status: "PAID" as const };
+  if (accountId) baseWhere.accountId = accountId;
 
   // ── Full where including type/status for paginated table ──
   const where: Record<string, unknown> = { ...baseWhere };
@@ -153,6 +159,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
     paidTodayExpenseAgg,
     paidTodayIncomeAgg,
     pendingByDeptRaw,
+    expenseByAccountRaw,
   ] = await Promise.all([
     prisma.transaction.findMany({
       where,
@@ -182,6 +189,12 @@ export const GET = withAuth(async ({ companyId, req }) => {
       _sum: { amount: true },
       orderBy: { _sum: { amount: "desc" } },
     }),
+    prisma.transaction.groupBy({
+      by: ["accountId"],
+      where: byAccountWhere,
+      _sum: { amount: true },
+      orderBy: { _sum: { amount: "desc" } },
+    }),
   ]);
 
   const deptIds = pendingByDeptRaw.map((r) => r.departmentId).filter(Boolean) as string[];
@@ -197,6 +210,22 @@ export const GET = withAuth(async ({ companyId, req }) => {
     departmentId: r.departmentId ?? null,
     name: r.departmentId ? (deptMap[r.departmentId]?.name ?? "Sem departamento") : "Sem departamento",
     color: r.departmentId ? (deptMap[r.departmentId]?.color ?? "#6366f1") : "#6b7280",
+    amount: Number(r._sum.amount ?? 0),
+  }));
+
+  // "Quanto saiu por banco": despesas pagas agrupadas por conta bancária.
+  const acctIds = expenseByAccountRaw.map((r) => r.accountId).filter(Boolean) as string[];
+  const accts = acctIds.length > 0
+    ? await prisma.account.findMany({
+        where: { id: { in: acctIds } },
+        select: { id: true, name: true, color: true },
+      })
+    : [];
+  const acctMap = Object.fromEntries(accts.map((a) => [a.id, a]));
+  const expenseByAccount = expenseByAccountRaw.map((r) => ({
+    accountId: r.accountId ?? null,
+    name: r.accountId ? (acctMap[r.accountId]?.name ?? "Conta removida") : "Sem conta",
+    color: r.accountId ? (acctMap[r.accountId]?.color ?? "#6366f1") : "#6b7280",
     amount: Number(r._sum.amount ?? 0),
   }));
 
@@ -220,6 +249,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
         paidTodayIncome: Number(paidTodayIncomeAgg._sum.amount ?? 0),
         paidTodayIncomeCount: paidTodayIncomeAgg._count,
         pendingByDepartment,
+        expenseByAccount,
       },
     },
     {

@@ -97,6 +97,15 @@ interface DeptBreakdown {
   amount: number;
 }
 
+interface Account { id: string; name: string; color?: string | null; }
+
+interface AccountBreakdown {
+  accountId: string | null;
+  name: string;
+  color: string;
+  amount: number;
+}
+
 interface Summary {
   expensePending: number;
   expensePaid: number;
@@ -108,6 +117,7 @@ interface Summary {
   paidTodayIncome?: number;
   paidTodayIncomeCount?: number;
   pendingByDepartment: DeptBreakdown[];
+  expenseByAccount: AccountBreakdown[];
 }
 
 const statusBadgeVariant: Record<string, "default" | "secondary" | "destructive" | "success" | "warning" | "outline"> = {
@@ -188,6 +198,8 @@ export default function TransactionsPage() {
   const [departmentFilter, setDepartmentFilter] = useState<string>("all");
   const [departments, setDepartments] = useState<Department[]>([]);
   const [employeeFilter, setEmployeeFilter] = useState<string>("all");
+  const [accountFilter, setAccountFilter] = useState<string>("all");
+  const [accounts, setAccounts] = useState<Account[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   // Sort por coluna — clicar no header alterna asc/desc.
   const [sortBy, setSortBy] = useState<string>("competenceDate");
@@ -203,9 +215,11 @@ export default function TransactionsPage() {
     }
     setPage(1);
   }
-  const [summary, setSummary] = useState<Summary>({ expensePending: 0, expensePaid: 0, pendingByDepartment: [] });
+  const [summary, setSummary] = useState<Summary>({ expensePending: 0, expensePaid: 0, pendingByDepartment: [], expenseByAccount: [] });
   const [showDeptBreakdown, setShowDeptBreakdown] = useState(false);
   const deptDropdownRef = useClickOutside<HTMLDivElement>(showDeptBreakdown, () => setShowDeptBreakdown(false));
+  const [showAccountBreakdown, setShowAccountBreakdown] = useState(false);
+  const accountDropdownRef = useClickOutside<HTMLDivElement>(showAccountBreakdown, () => setShowAccountBreakdown(false));
   const [modalOpen, setModalOpen] = useState(false);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -282,6 +296,7 @@ export default function TransactionsPage() {
     statusFilter !== "all" ||
     departmentFilter !== "all" ||
     employeeFilter !== "all" ||
+    accountFilter !== "all" ||
     dateFrom !== DEFAULT_FROM ||
     dateTo !== DEFAULT_TO;
 
@@ -291,6 +306,7 @@ export default function TransactionsPage() {
     setStatusFilter("all");
     setDepartmentFilter("all");
     setEmployeeFilter("all");
+    setAccountFilter("all");
     setDateFrom(DEFAULT_FROM);
     setDateTo(DEFAULT_TO);
     setPage(1);
@@ -339,6 +355,12 @@ export default function TransactionsPage() {
     cachedFetch<{ employees: Employee[] }>("/api/employees")
       .then((data) => setEmployees(Array.isArray(data?.employees) ? data.employees : []))
       .catch(() => {});
+    cachedFetch<Account[]>("/api/accounts")
+      .then((data) => setAccounts(Array.isArray(data) ? data : []))
+      .catch(() => {});
+    // Pré-seleciona a conta vinda da URL (ex: link da tela de Contas → ?accountId=)
+    const urlAccount = new URLSearchParams(window.location.search).get("accountId");
+    if (urlAccount) { setAccountFilter(urlAccount); setShowMoreFilters(true); }
   }, []);
 
   // Quando a busca debounced muda, volta pra página 1 — mantém UX previsível
@@ -373,6 +395,7 @@ export default function TransactionsPage() {
         ...(dateTo   && { endDate:   dateTo }),
         ...(departmentFilter !== "all" && { departmentId: departmentFilter }),
         ...(employeeFilter !== "all" && { employeeId: employeeFilter }),
+        ...(accountFilter !== "all" && { accountId: accountFilter }),
         sortBy,
         sortOrder,
         ...(typeFilter !== "all" && !isPendingPayments && { type: typeFilter }),
@@ -402,7 +425,7 @@ export default function TransactionsPage() {
         markRefreshedRef.current?.();
       }
     }
-  }, [page, search, typeFilter, statusFilter, dateFrom, dateTo, departmentFilter, employeeFilter, sortBy, sortOrder]);
+  }, [page, search, typeFilter, statusFilter, dateFrom, dateTo, departmentFilter, employeeFilter, accountFilter, sortBy, sortOrder]);
 
   // ── Auto-refresh (5min + on tab focus). Filtros mudando já disparam refetch
   // pelo useEffect abaixo, então o hook simplesmente chama fetchTransactions
@@ -770,15 +793,78 @@ export default function TransactionsPage() {
             )}
           </div>
 
-          {/* Saídas Pagas */}
-          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-emerald-600/15 flex items-center justify-center shrink-0">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-            </div>
-            <div>
-              <p className="text-xs text-zinc-500">Saídas Pagas</p>
-              <p className="text-lg font-bold text-emerald-400">{formatCurrency(summary.expensePaid)}</p>
-            </div>
+          {/* Saídas Pagas — clicável com breakdown por banco (quanto saiu por banco) */}
+          <div className="relative" ref={accountDropdownRef}>
+            <button
+              onClick={() => setShowAccountBreakdown((v) => !v)}
+              className={`w-full bg-zinc-900 border rounded-xl p-4 flex items-center gap-3 hover:border-emerald-600/50 transition-colors text-left ${
+                showAccountBreakdown ? "border-emerald-600/50" : "border-zinc-800"
+              }`}
+            >
+              <div className="w-9 h-9 rounded-lg bg-emerald-600/15 flex items-center justify-center shrink-0">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-zinc-500">Saídas Pagas</p>
+                <p className="text-lg font-bold text-emerald-400">{formatCurrency(summary.expensePaid)}</p>
+              </div>
+              <ChevronDown
+                className={`w-4 h-4 text-zinc-500 shrink-0 transition-transform ${showAccountBreakdown ? "rotate-180" : ""}`}
+              />
+            </button>
+
+            {/* Dropdown breakdown por banco */}
+            {showAccountBreakdown && (() => {
+              const totalByAccount = summary.expenseByAccount.reduce((s, a) => s + a.amount, 0);
+              return (
+              <div className="absolute top-full left-0 right-0 mt-1.5 z-50 bg-zinc-900 border border-zinc-700 rounded-xl shadow-xl shadow-black/40 overflow-hidden">
+                <div className="px-3 py-2 border-b border-zinc-800">
+                  <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wide">Quanto saiu por banco</p>
+                </div>
+                {summary.expenseByAccount.length === 0 ? (
+                  <div className="px-3 py-4 text-center text-xs text-zinc-500">
+                    Nenhuma saída paga no período
+                  </div>
+                ) : (
+                  <div className="divide-y divide-zinc-800/60 max-h-72 overflow-y-auto">
+                    {summary.expenseByAccount.map((a, i) => {
+                      const pct = totalByAccount > 0 ? (a.amount / totalByAccount) * 100 : 0;
+                      return (
+                        <button
+                          type="button"
+                          key={a.accountId ?? `no-acct-${i}`}
+                          onClick={() => {
+                            if (a.accountId) { setAccountFilter(a.accountId); setShowMoreFilters(true); setPage(1); }
+                            setShowAccountBreakdown(false);
+                          }}
+                          className="w-full text-left px-3 py-2.5 hover:bg-zinc-800/50 transition-colors"
+                          title={a.accountId ? `Filtrar por ${a.name}` : undefined}
+                        >
+                          <div className="flex items-center justify-between mb-1.5">
+                            <div className="flex items-center gap-2">
+                              <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: a.color }} />
+                              <span className="text-xs text-zinc-300 font-medium">{a.name}</span>
+                            </div>
+                            <div className="text-right">
+                              <span className="text-xs font-semibold text-emerald-400">{formatCurrency(a.amount)}</span>
+                              <span className="text-xs text-zinc-600 ml-1.5">{pct.toFixed(0)}%</span>
+                            </div>
+                          </div>
+                          <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
+                            <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: a.color }} />
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                <div className="px-3 py-2 border-t border-zinc-800 bg-zinc-800/40 flex justify-between items-center">
+                  <span className="text-xs text-zinc-500">Total que saiu</span>
+                  <span className="text-xs font-bold text-emerald-400">{formatCurrency(totalByAccount)}</span>
+                </div>
+              </div>
+              );
+            })()}
           </div>
 
           {/* Total Previsto */}
@@ -825,16 +911,16 @@ export default function TransactionsPage() {
             <button
               onClick={() => setShowMoreFilters((v) => !v)}
               className={`flex items-center gap-1.5 h-10 px-3 rounded-md border text-sm transition-colors whitespace-nowrap ${
-                showMoreFilters || departmentFilter !== "all" || employeeFilter !== "all"
+                showMoreFilters || departmentFilter !== "all" || employeeFilter !== "all" || accountFilter !== "all"
                   ? "border-indigo-500/50 bg-indigo-600/10 text-indigo-300"
                   : "border-zinc-700 bg-zinc-900 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200"
               }`}
             >
               <SlidersHorizontal className="w-4 h-4" />
               Filtros
-              {(departmentFilter !== "all" || employeeFilter !== "all") && (
+              {(departmentFilter !== "all" || employeeFilter !== "all" || accountFilter !== "all") && (
                 <span className="w-5 h-5 rounded-full bg-indigo-600 text-white text-xs flex items-center justify-center font-semibold">
-                  {[departmentFilter !== "all", employeeFilter !== "all"].filter(Boolean).length}
+                  {[departmentFilter !== "all", employeeFilter !== "all", accountFilter !== "all"].filter(Boolean).length}
                 </span>
               )}
             </button>
@@ -854,6 +940,7 @@ export default function TransactionsPage() {
                     ...(dateTo   && { endDate:   dateTo }),
                     ...(departmentFilter !== "all" && { departmentId: departmentFilter }),
                     ...(employeeFilter !== "all" && { employeeId: employeeFilter }),
+                    ...(accountFilter !== "all" && { accountId: accountFilter }),
                     ...(typeFilter !== "all" && !isPendingPayments && { type: typeFilter }),
                     ...(isPendingPayments && { type: "EXPENSE", status: "PENDING,OVERDUE" }),
                     ...(!isPendingPayments && statusFilter !== "all" && { status: statusFilter }),
@@ -1005,10 +1092,28 @@ export default function TransactionsPage() {
                 />
               </div>
 
+              {/* Conta / Banco */}
+              <Select value={accountFilter} onValueChange={(v) => startTransition(() => { setAccountFilter(v); setPage(1); })}>
+                <SelectTrigger className="w-44">
+                  <SelectValue placeholder="Banco / Conta" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Todos os bancos</SelectItem>
+                  {accounts.map((a) => (
+                    <SelectItem key={a.id} value={a.id}>
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: a.color ?? "#6366f1" }} />
+                        {a.name}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
               {/* Clear drawer filters */}
-              {(departmentFilter !== "all" || employeeFilter !== "all") && (
+              {(departmentFilter !== "all" || employeeFilter !== "all" || accountFilter !== "all") && (
                 <button
-                  onClick={() => { setDepartmentFilter("all"); setEmployeeFilter("all"); setPage(1); }}
+                  onClick={() => { setDepartmentFilter("all"); setEmployeeFilter("all"); setAccountFilter("all"); setPage(1); }}
                   className="flex items-center gap-1 text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
                 >
                   <X className="w-3.5 h-3.5" />
