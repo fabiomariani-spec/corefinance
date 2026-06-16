@@ -3,6 +3,12 @@ import { prisma } from "@/lib/prisma";
 import { withAuth } from "@/lib/api-handler";
 import { searchTransactionIds } from "@/lib/search";
 import { adjustToPreviousBusinessDay } from "@/lib/dates";
+import {
+  buildDateWindows,
+  isRealizedStatusFilter,
+  withDueWindow,
+  withPaymentWindow,
+} from "@/lib/transaction-filters";
 import { z } from "zod";
 
 const transactionSchema = z.object({
@@ -53,30 +59,14 @@ export const GET = withAuth(async ({ companyId, req }) => {
   const sortBy = searchParams.get("sortBy") ?? "competenceDate";
   const sortOrder = (searchParams.get("sortOrder") ?? "desc") as "asc" | "desc";
 
-  // ── Base where (without type/status) used for summary aggregates ──
+  // ── Base where (sem filtro de data) — a janela de período é aplicada por
+  // sub-query, porque registros realizados (pagos/recebidos) recortam por
+  // paymentDate e os demais por dueDate. ──
   const baseWhere: Record<string, unknown> = { companyId };
 
   if (categoryId) baseWhere.categoryId = categoryId;
   if (departmentId) baseWhere.departmentId = departmentId;
   if (employeeId) baseWhere.employeeId = employeeId;
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const dateFilter: any[] | null = month
-    ? (() => {
-        const [y, m] = month.split("-").map(Number);
-        const gte = new Date(y, m - 1, 1);
-        const lte = new Date(y, m, 0, 23, 59, 59);
-        return [
-          { dueDate: { gte, lte } },
-          { dueDate: null, competenceDate: { gte, lte } },
-        ];
-      })()
-    : (startDate || endDate)
-      ? [
-          { dueDate: { ...(startDate && { gte: new Date(startDate + "T00:00:00") }), ...(endDate && { lte: new Date(endDate + "T23:59:59") }) } },
-          { dueDate: null, competenceDate: { ...(startDate && { gte: new Date(startDate + "T00:00:00") }), ...(endDate && { lte: new Date(endDate + "T23:59:59") }) } },
-        ]
-      : null;
 
   // Accent + case insensitive search via raw SQL translate() on all joined
   // tables (description, category, department, contact). Returns a list of
@@ -86,28 +76,39 @@ export const GET = withAuth(async ({ companyId, req }) => {
     baseWhere.id = { in: matchedIds };
   }
 
-  if (dateFilter) {
-    baseWhere.OR = dateFilter;
-  }
+  // Janelas de data (ver lib/transaction-filters.ts):
+  //   - realizados (Pagos/Recebidos) → recorta por paymentDate
+  //   - demais (pendentes/previstos/atrasados/"Todos") → por dueDate (+competência)
+  const windows = buildDateWindows({ month, startDate, endDate });
+  const tableIsRealized = isRealizedStatusFilter(status);
+  // Aplica paymentDate aos agregados de realizados SOMENTE quando o usuário
+  // está filtrando Pagos/Recebidos — assim o total dos cards bate com a soma
+  // exibida na lista. Fora desse modo, mantém o recorte por vencimento.
+  const realizedWindow = <T extends Record<string, unknown>>(w: T) =>
+    tableIsRealized ? withPaymentWindow(w, windows) : withDueWindow(w, windows);
+  const dueWindow = <T extends Record<string, unknown>>(w: T) =>
+    withDueWindow(w, windows);
 
   // Breakdown "quanto saiu por banco": despesas pagas por conta, respeitando
   // todos os filtros MENOS o de conta (pra sempre comparar os bancos entre si).
-  const byAccountWhere = { ...baseWhere, type: "EXPENSE" as const, status: "PAID" as const };
+  const byAccountBase = { ...baseWhere, type: "EXPENSE" as const, status: "PAID" as const };
   if (accountId) baseWhere.accountId = accountId;
+  const byAccountWhere = realizedWindow(byAccountBase);
 
   // ── Full where including type/status for paginated table ──
-  const where: Record<string, unknown> = { ...baseWhere };
+  const tableBase: Record<string, unknown> = { ...baseWhere };
 
   if (type) {
     const types = type.split(",");
-    where.type = types.length > 1 ? { in: types } : types[0];
+    tableBase.type = types.length > 1 ? { in: types } : types[0];
   }
   if (status) {
     const statuses = status.split(",");
-    where.status = statuses.length > 1 ? { in: statuses } : statuses[0];
+    tableBase.status = statuses.length > 1 ? { in: statuses } : statuses[0];
   }
+  const where = realizedWindow(tableBase);
 
-  const pendingWhere = { ...baseWhere, type: "EXPENSE" as const, status: { in: ["PENDING", "OVERDUE"] as ("PENDING" | "OVERDUE")[] } };
+  const pendingWhere = dueWindow({ ...baseWhere, type: "EXPENSE" as const, status: { in: ["PENDING", "OVERDUE"] as ("PENDING" | "OVERDUE")[] } });
 
   // Sort: aceita sortBy=employee|description|category|department|dueDate|paymentDate|status|amount|competenceDate
   // sortOrder=asc|desc.
@@ -178,9 +179,9 @@ export const GET = withAuth(async ({ companyId, req }) => {
     }),
     prisma.transaction.count({ where }),
     prisma.transaction.aggregate({ where: pendingWhere, _sum: { amount: true } }),
-    prisma.transaction.aggregate({ where: { ...baseWhere, type: "EXPENSE", status: "PAID" }, _sum: { amount: true } }),
-    prisma.transaction.aggregate({ where: { ...baseWhere, type: "INCOME", status: "RECEIVED" }, _sum: { amount: true }, _count: true }),
-    prisma.transaction.aggregate({ where: { ...baseWhere, type: "INCOME", status: { in: ["PENDING", "OVERDUE"] } }, _sum: { amount: true } }),
+    prisma.transaction.aggregate({ where: realizedWindow({ ...baseWhere, type: "EXPENSE" as const, status: "PAID" as const }), _sum: { amount: true } }),
+    prisma.transaction.aggregate({ where: realizedWindow({ ...baseWhere, type: "INCOME" as const, status: "RECEIVED" as const }), _sum: { amount: true }, _count: true }),
+    prisma.transaction.aggregate({ where: dueWindow({ ...baseWhere, type: "INCOME" as const, status: { in: ["PENDING", "OVERDUE"] as ("PENDING" | "OVERDUE")[] } }), _sum: { amount: true } }),
     prisma.transaction.aggregate({ where: { companyId, type: "EXPENSE", status: "PAID", paymentDate: { gte: todayStart, lte: todayEnd } }, _sum: { amount: true }, _count: true }),
     prisma.transaction.aggregate({ where: { companyId, type: "INCOME", status: "RECEIVED", paymentDate: { gte: todayStart, lte: todayEnd } }, _sum: { amount: true }, _count: true }),
     prisma.transaction.groupBy({
