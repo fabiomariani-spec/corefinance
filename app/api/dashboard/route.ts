@@ -110,6 +110,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
         select: {
           type: true,
           amount: true,
+          status: true,
           isPredicted: true,
           contactId: true,
           categoryId: true,
@@ -149,8 +150,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
         where: {
           companyId,
           competenceDate: { gte: burn3mStart, lte: burn3mEnd },
-          isPredicted: false,
-          status: { not: "CANCELLED" },
+          status: { in: ["RECEIVED", "PAID"] },
         },
         select: { type: true, amount: true, competenceDate: true },
       }),
@@ -158,8 +158,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
         where: {
           companyId,
           competenceDate: { gte: trend12mStart, lte: trend12mEnd },
-          isPredicted: false,
-          status: { not: "CANCELLED" },
+          status: { in: ["RECEIVED", "PAID"] },
         },
         select: { type: true, amount: true, competenceDate: true, contactId: true },
       }),
@@ -181,12 +180,22 @@ export const GET = withAuth(async ({ companyId, req }) => {
     const headcount = company?.headcount ?? 0;
 
     // ── Current period aggregates ─────────────────────────────────────────────
+    // Regime de CAIXA: realizado = só RECEIVED/PAID. Antes usava !isPredicted,
+    // que contava boleto/conta PENDENTE como receita/despesa realizada (inflava).
     const currentIncome = currentTransactions
-      .filter((t) => t.type === "INCOME" && !t.isPredicted)
+      .filter((t) => t.type === "INCOME" && t.status === "RECEIVED")
       .reduce((s, t) => s + Number(t.amount), 0);
 
     const currentExpenses = currentTransactions
-      .filter((t) => t.type === "EXPENSE" && !t.isPredicted)
+      .filter((t) => t.type === "EXPENSE" && t.status === "PAID")
+      .reduce((s, t) => s + Number(t.amount), 0);
+
+    // A receber / a pagar do mês (reais, ainda não realizados) — cards separados.
+    const incomeReceivable = currentTransactions
+      .filter((t) => t.type === "INCOME" && (t.status === "PENDING" || t.status === "OVERDUE"))
+      .reduce((s, t) => s + Number(t.amount), 0);
+    const expensePayable = currentTransactions
+      .filter((t) => t.type === "EXPENSE" && (t.status === "PENDING" || t.status === "OVERDUE"))
       .reduce((s, t) => s + Number(t.amount), 0);
 
     const currentIncomePredicted = currentTransactions
@@ -202,10 +211,10 @@ export const GET = withAuth(async ({ companyId, req }) => {
 
     // ── Previous period aggregates ────────────────────────────────────────────
     const previousIncome = prevTransactions
-      .filter((t) => t.type === "INCOME" && !t.isPredicted)
+      .filter((t) => t.type === "INCOME" && t.status === "RECEIVED")
       .reduce((s, t) => s + Number(t.amount), 0);
     const previousExpenses = prevTransactions
-      .filter((t) => t.type === "EXPENSE" && !t.isPredicted)
+      .filter((t) => t.type === "EXPENSE" && t.status === "PAID")
       .reduce((s, t) => s + Number(t.amount), 0);
 
     // ── Burn Rate (data já buscada no Promise.all acima) ──────────────────────
@@ -238,7 +247,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
 
     const byDepartmentMap: Record<string, { name: string; amount: number; color: string; budget: number }> = {};
     currentTransactions
-      .filter((t) => t.type === "EXPENSE" && !t.isPredicted)
+      .filter((t) => t.type === "EXPENSE" && t.status === "PAID")
       .forEach((t) => {
         const key = t.departmentId ?? "sem-depto";
         if (!byDepartmentMap[key]) {
@@ -256,7 +265,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
     // ── Income by Category ──────────────────────────────────────────────────
     const byIncomeCategoryMap: Record<string, { name: string; amount: number; color: string }> = {};
     currentTransactions
-      .filter((t) => t.type === "INCOME" && !t.isPredicted)
+      .filter((t) => t.type === "INCOME" && t.status === "RECEIVED")
       .forEach((t) => {
         const key = t.categoryId ?? "sem-cat";
         if (!byIncomeCategoryMap[key]) {
@@ -275,7 +284,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
     // ── Expenses by Category ──────────────────────────────────────────────────
     const byCategoryMap: Record<string, { name: string; amount: number; color: string }> = {};
     currentTransactions
-      .filter((t) => t.type === "EXPENSE" && t.category && !t.isPredicted)
+      .filter((t) => t.type === "EXPENSE" && t.category && t.status === "PAID")
       .forEach((t) => {
         const key = t.categoryId ?? "sem-cat";
         if (!byCategoryMap[key]) {
@@ -292,12 +301,12 @@ export const GET = withAuth(async ({ companyId, req }) => {
     // ── Churn ─────────────────────────────────────────────────────────────────
     const currentClientIds = new Set(
       currentTransactions
-        .filter((t) => t.type === "INCOME" && !t.isPredicted && t.contactId)
+        .filter((t) => t.type === "INCOME" && t.status === "RECEIVED" && t.contactId)
         .map((t) => t.contactId as string)
     );
     const prevClientIds = new Set(
       prevTransactions
-        .filter((t) => t.type === "INCOME" && !t.isPredicted && t.contactId)
+        .filter((t) => t.type === "INCOME" && t.status === "RECEIVED" && t.contactId)
         .map((t) => t.contactId as string)
     );
     const churnedClientIds = [...prevClientIds].filter((id) => !currentClientIds.has(id));
@@ -305,13 +314,13 @@ export const GET = withAuth(async ({ companyId, req }) => {
       prevClientIds.size > 0 ? (churnedClientIds.length / prevClientIds.size) * 100 : 0;
 
     const prevRevenueWithContact = prevTransactions
-      .filter((t) => t.type === "INCOME" && !t.isPredicted && t.contactId)
+      .filter((t) => t.type === "INCOME" && t.status === "RECEIVED" && t.contactId)
       .reduce((s, t) => s + Number(t.amount), 0);
     const churnedRevenue = prevTransactions
       .filter(
         (t) =>
           t.type === "INCOME" &&
-          !t.isPredicted &&
+          t.status === "RECEIVED" &&
           t.contactId &&
           churnedClientIds.includes(t.contactId)
       )
@@ -321,7 +330,7 @@ export const GET = withAuth(async ({ companyId, req }) => {
 
     // ── Top Expenses ──────────────────────────────────────────────────────────
     const topExpenses = currentTransactions
-      .filter((t) => t.type === "EXPENSE" && !t.isPredicted)
+      .filter((t) => t.type === "EXPENSE" && t.status === "PAID")
       .sort((a, b) => Number(b.amount) - Number(a.amount))
       .slice(0, 8)
       .map((t) => ({
@@ -396,8 +405,9 @@ export const GET = withAuth(async ({ companyId, req }) => {
     const totalPayables = upcomingPayables.reduce((s, t) => s + Number(t.amount), 0);
 
     // ── Projection ────────────────────────────────────────────────────────────
-    const projectedIncome = currentIncome + currentIncomePredicted;
-    const projectedExpenses = currentExpenses + currentExpensesPredicted;
+    // Projeção = realizado + a-receber/a-pagar (pendente real) + previsto.
+    const projectedIncome = currentIncome + incomeReceivable + currentIncomePredicted;
+    const projectedExpenses = currentExpenses + expensePayable + currentExpensesPredicted;
     const projectedProfit = projectedIncome - projectedExpenses;
 
   return NextResponse.json({
@@ -406,6 +416,8 @@ export const GET = withAuth(async ({ companyId, req }) => {
       expenses: currentExpenses,
       netProfit,
       netMargin,
+      incomeReceivable,
+      expensePayable,
       incomePredicted: currentIncomePredicted,
       expensesPredicted: currentExpensesPredicted,
     },
