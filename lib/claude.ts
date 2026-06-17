@@ -219,30 +219,11 @@ async function extractInvoiceFromPages(pages: string[]): Promise<InvoiceExtracti
     if (!dup) merged.items.push(credit);
   }
 
-  // Auto-balanceamento final: se mesmo após a injeção a soma dos itens
-  // chargedThisMonth ainda divergir do totalAmount > R$ 1, cria UM item de
-  // "Ajuste de reconciliação" com o sinal oposto pra fechar a conta.
-  // Garante que o usuário nunca veja divergência — preserva a integridade
-  // do total da fatura e permite investigar o ajuste manualmente.
-  if (merged.totalAmount > 0) {
-    const sumCharged = merged.items
-      .filter((it) => it.chargedThisMonth !== false)
-      .reduce((s, it) => s + it.amount, 0);
-    const diff = sumCharged - merged.totalAmount;
-    if (Math.abs(diff) > 1) {
-      merged.items.push({
-        date: merged.referenceMonth ? `${merged.referenceMonth}-01` : new Date().toISOString().slice(0, 10),
-        description: "Ajuste de reconciliação (verifique itens da fatura)",
-        amount: -diff,
-        isCredit: diff > 0,
-        establishment: null,
-        installmentInfo: null,
-        section: "Ajuste de reconciliação",
-        chargedThisMonth: true,
-        suggestedCategory: null,
-      });
-    }
-  }
+  // NÃO criamos "ajuste de reconciliação" automático. Em financeiro, mascarar
+  // a divergência com um lançamento-fantasma esconde erro de extração (itens
+  // perdidos/duplicados) e impede o fechamento no centavo. A divergência entre
+  // a soma dos itens e o totalAmount é exposta na tela de importação
+  // (reconciliação) e bloqueia a confirmação até bater — ver faturas/import.
 
   return merged;
 }

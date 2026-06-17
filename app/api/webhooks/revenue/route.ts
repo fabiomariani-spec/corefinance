@@ -39,7 +39,12 @@ function normalizePlatform(body: Record<string, unknown>) {
     competenceDate: purchaseDate,
     dueDate: purchaseDate,
     status,
-    externalId: `order_${body.id}`,
+    // Só deriva externalId quando há um id real do pedido. Sem isso, payloads
+    // sem `id` viravam todos "order_undefined" e colavam vendas distintas numa
+    // só (a 2ª batia 409 e sumia). Com null, os guards `if (externalId)` abaixo
+    // pulam a dedupe e cada venda é gravada — perder receita é pior que não
+    // deduplicar um retry raro (idempotência por id real segue funcionando).
+    externalId: (body.id != null && String(body.id).trim() !== "") ? `order_${body.id}` : null,
     notes: notes || null,
     categoryName: null as string | null,
     departmentName: null as string | null,

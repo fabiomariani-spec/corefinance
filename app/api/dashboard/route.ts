@@ -218,8 +218,11 @@ export const GET = withAuth(async ({ companyId, req }) => {
       if (t.type === "INCOME") burn3mByMonth[key].inc += Number(t.amount);
       else burn3mByMonth[key].exp += Number(t.amount);
     }
-    const burn3mValues = Object.values(burn3mByMonth).map((m) => Math.max(0, m.exp - m.inc));
-    const avgBurnRate3m = burn3mValues.length > 0 ? burn3mValues.reduce((s, v) => s + v, 0) / burn3mValues.length : 0;
+    // Janela FIXA de 3 meses (refMonth-3 .. refMonth-1): divide por 3, não pelo
+    // nº de meses COM movimento. Antes, 1 mês de burn R$30k virava média R$30k
+    // (÷1) em vez de R$10k (÷3) — runway falsamente curto. Meses sem burn são 0.
+    const burn3mTotal = Object.values(burn3mByMonth).reduce((s, m) => s + Math.max(0, m.exp - m.inc), 0);
+    const avgBurnRate3m = burn3mTotal / 3;
     const runway = avgBurnRate3m > 0 ? totalCashBalance / avgBurnRate3m : -1;
 
     // ── Revenue per Employee ──────────────────────────────────────────────────
@@ -329,8 +332,14 @@ export const GET = withAuth(async ({ companyId, req }) => {
       }));
 
     // ── Credit card committed ─────────────────────────────────────────────────
+    // Comprometido no cartão = compras (EXPENSE) menos estornos (INCOME), sem
+    // previstos. Antes somava o amount de qualquer tipo, então estorno de fatura
+    // (gravado como INCOME no mesmo cartão) era contado COMO gasto, inflando.
     const creditCardCommitted = creditCardTotals.reduce((sum, card) => {
-      return sum + card.transactions.reduce((s, t) => s + Number(t.amount), 0);
+      return sum + card.transactions.reduce((s, t) => {
+        if (t.isPredicted) return s;
+        return s + (t.type === "INCOME" ? -Number(t.amount) : Number(t.amount));
+      }, 0);
     }, 0);
 
     // ── 12-Month trend + churn (allTrendTxs já buscada no Promise.all acima) ─

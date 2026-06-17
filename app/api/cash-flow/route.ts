@@ -59,6 +59,11 @@ export const GET = withAuth(async ({ companyId, req }) => {
         by: ["type"],
         where: {
           companyId,
+          // Saldo de caixa é só o que está EM contas — alinhado com txByAccount
+          // acima. Sem este filtro, transações realizadas sem conta inflavam o
+          // accountBalance e ele divergia da soma das contas (e do dashboard),
+          // contaminando toda a projeção de 60 dias / runway.
+          accountId: { not: null },
           OR: [
             { type: "INCOME", status: "RECEIVED" },
             { type: "EXPENSE", status: "PAID" },
