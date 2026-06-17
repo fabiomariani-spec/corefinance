@@ -116,10 +116,12 @@ export const POST = withAuth(async ({ companyId, req }) => {
   const competenceDate = new Date(`${month}-01T12:00:00`);
   // Use user-selected date if provided, otherwise derive from employee.dueDayOfMonth.
   // Data derivada pelo sistema respeita regra de dia útil (sáb/dom → sex anterior).
+  // Clampa o dia a [1,28] e constrói por componentes — alinhado com lib/salary.
+  // Antes, dueDayOfMonth=31 em fevereiro montava "2026-02-31" e o JS rolava pro
+  // mês seguinte (competência em fev, vencimento em março).
+  const safeDueDay = Math.min(Math.max(employee.dueDayOfMonth ?? 5, 1), 28);
   const dueDate = resolvedPaymentDate
-    ?? adjustToPreviousBusinessDay(
-      new Date(`${y}-${m}-${String(employee.dueDayOfMonth ?? 5).padStart(2, "0")}T12:00:00`)
-    );
+    ?? adjustToPreviousBusinessDay(new Date(Number(y), Number(m) - 1, safeDueDay, 12, 0, 0));
   const txDescription = `Remuneração Variável — ${employee.name}`;
 
   // Upsert transaction (find by tag, update or create)

@@ -318,8 +318,10 @@ async function getExpensesByCategory(
   startDate?: string,
   endDate?: string
 ) {
-  const start = startDate ? new Date(startDate) : startOfMonth(new Date());
-  const end = endDate ? new Date(endDate) : endOfMonth(new Date());
+  // T00:00:00/T23:59:59 (local) cobre o dia inteiro sem shift de fuso. Antes,
+  // new Date("2026-06-30") virava 29/06 21h no BR e excluía o último dia.
+  const start = startDate ? new Date(startDate + "T00:00:00") : startOfMonth(new Date());
+  const end = endDate ? new Date(endDate + "T23:59:59") : endOfMonth(new Date());
 
   const txs = await prisma.transaction.findMany({
     where: {

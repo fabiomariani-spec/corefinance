@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { toDateStr } from "@/lib/dates";
 // Import internal module directly — index.js runs a self-test that breaks at build time
 // @ts-expect-error — no types for the internal path
 import pdfParse from "pdf-parse/lib/pdf-parse.js";
@@ -252,7 +253,9 @@ function scanKnownCreditsFromText(text: string): ExtractedInvoiceItem[] {
       if (seen.has(key)) continue;
       seen.add(key);
       credits.push({
-        date: new Date().toISOString().slice(0, 10),
+        // toDateStr usa componentes locais (sem shift UTC). new Date().toISOString()
+        // virava o dia seguinte à noite no BR, jogando o crédito no mês errado.
+        date: toDateStr(new Date()),
         description: desc,
         amount,
         isCredit: true,

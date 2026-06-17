@@ -330,11 +330,12 @@ export const POST = withAuth(async ({ companyId, req }) => {
     const baseDate = new Date(data.competenceDate);
 
     const transactions = Array.from({ length: months }, (_, i) => {
-      const competence = new Date(baseDate.getFullYear(), baseDate.getMonth() + i, 1);
+      const competence = new Date(baseDate.getFullYear(), baseDate.getMonth() + i, 1, 12, 0, 0);
       // Último dia válido do mês corrente
       const lastDay = new Date(competence.getFullYear(), competence.getMonth() + 1, 0).getDate();
       const effectiveDay = Math.min(dayOfMonth, lastDay);
-      const rawDue = new Date(competence.getFullYear(), competence.getMonth(), effectiveDay);
+      // Meio-dia local (consistente com SINGLE/WEEKLY) — evita qualquer edge de fuso.
+      const rawDue = new Date(competence.getFullYear(), competence.getMonth(), effectiveDay, 12, 0, 0);
       // Se o vencimento cair em fim de semana, antecipa para sexta anterior
       // (regra do financeiro: nada pode vencer em sábado/domingo).
       const due = adjustToPreviousBusinessDay(rawDue);
