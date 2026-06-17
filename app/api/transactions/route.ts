@@ -93,7 +93,10 @@ export const GET = withAuth(async ({ companyId, req }) => {
   // todos os filtros MENOS o de conta (pra sempre comparar os bancos entre si).
   const byAccountBase = { ...baseWhere, type: "EXPENSE" as const, status: "PAID" as const };
   if (accountId) baseWhere.accountId = accountId;
-  const byAccountWhere = realizedWindow(byAccountBase);
+  // Cards de realizado têm status fixo (PAID/RECEIVED), então SEMPRE recortam por
+  // paymentDate — não via realizedWindow (que cairia em dueDate quando o chip de
+  // status não é "Pagos", fazendo o card oscilar ao trocar um filtro não relacionado).
+  const byAccountWhere = withPaymentWindow(byAccountBase, windows);
 
   // ── Full where including type/status for paginated table ──
   const tableBase: Record<string, unknown> = { ...baseWhere };
@@ -179,8 +182,8 @@ export const GET = withAuth(async ({ companyId, req }) => {
     }),
     prisma.transaction.count({ where }),
     prisma.transaction.aggregate({ where: pendingWhere, _sum: { amount: true } }),
-    prisma.transaction.aggregate({ where: realizedWindow({ ...baseWhere, type: "EXPENSE" as const, status: "PAID" as const }), _sum: { amount: true } }),
-    prisma.transaction.aggregate({ where: realizedWindow({ ...baseWhere, type: "INCOME" as const, status: "RECEIVED" as const }), _sum: { amount: true }, _count: true }),
+    prisma.transaction.aggregate({ where: withPaymentWindow({ ...baseWhere, type: "EXPENSE" as const, status: "PAID" as const }, windows), _sum: { amount: true } }),
+    prisma.transaction.aggregate({ where: withPaymentWindow({ ...baseWhere, type: "INCOME" as const, status: "RECEIVED" as const }, windows), _sum: { amount: true }, _count: true }),
     prisma.transaction.aggregate({ where: dueWindow({ ...baseWhere, type: "INCOME" as const, status: { in: ["PENDING", "OVERDUE"] as ("PENDING" | "OVERDUE")[] } }), _sum: { amount: true } }),
     prisma.transaction.aggregate({ where: { companyId, type: "EXPENSE", status: "PAID", paymentDate: { gte: todayStart, lte: todayEnd } }, _sum: { amount: true }, _count: true }),
     prisma.transaction.aggregate({ where: { companyId, type: "INCOME", status: "RECEIVED", paymentDate: { gte: todayStart, lte: todayEnd } }, _sum: { amount: true }, _count: true }),
