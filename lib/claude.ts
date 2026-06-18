@@ -54,8 +54,8 @@ SANTANDER: "Lançamentos do período" | "Lançamentos parcelados em aberto" | "P
 GENÉRICOS (qualquer banco): "Resumo da fatura", "Sumário", "Detalhamento por cartão adicional"
 
 REGRA DE NEGÓCIO — O QUE ENTRA NO TOTAL DESTE MÊS:
-✅ ENTRA: seções tipo "Lançamentos do período" / "Transações" / "Compras nacionais/internacionais" / "Encargos" / "Estornos/Créditos / Cashback do período" / "IOF" / "Anuidade"
-❌ NÃO ENTRA: "Próximas faturas" / "Compras parceladas em aberto" (são as parcelas FUTURAS que vão pra próximas faturas — não conta neste mês) / "Pagamento efetuado" da fatura anterior (NÃO é crédito, é só registro)
+✅ ENTRA: TRANSAÇÕES INDIVIDUAIS, cada uma com SUA PRÓPRIA DATA (DD/MMM), das listas de lançamentos do cartão — compras nacionais/internacionais, estornos/créditos/cashback do período, e encargos LANÇADOS COMO LINHA com data (juros, multa, IOF, anuidade que aparecem na lista de transações com uma data ao lado).
+❌ NÃO ENTRA: "Próximas faturas" / "Compras parceladas em aberto" (parcelas FUTURAS — não contam neste mês) / "Pagamento efetuado" da fatura anterior (NÃO é crédito, é só registro) / o bloco "Resumo da fatura" (ver ARMADILHA #3).
 
 Pra cada item:
 - date: "YYYY-MM-DD" da transação
@@ -70,7 +70,9 @@ Pra cada item:
 
 ⚠️ ARMADILHA COMUM: na seção "Compras parceladas em aberto" os bancos costumam listar TODAS as parcelas restantes com o valor da PARCELA (não do saldo total). Mesmo que pareça um lançamento normal, se está nessa seção → chargedThisMonth=FALSE.
 
-⚠️ ARMADILHA #2: "Pagamento efetuado" / "PAGTO POR DEB EM C/C" — é o pagamento da fatura anterior. NÃO é crédito do mês. Coloque section="Pagamentos efetuados" e chargedThisMonth=FALSE.
+⚠️ ARMADILHA #2: "Pagamento efetuado" / "PAGTO POR DEB EM C/C" / "Inclusao de Pagamento" — é pagamento da fatura, NÃO é compra nem crédito do mês. Coloque section="Pagamentos efetuados" e chargedThisMonth=FALSE.
+
+⚠️ ARMADILHA #3 (CRÍTICA — duplica encargos): a seção "Resumo da fatura" / "Resumo" — o bloco que lista TOTAIS agregados ("Compras nacionais", "Compras internacionais", "Juros de financiamento", "Multas por atraso", "IOF", "Valores creditados") e termina em "Total a pagar" — é um TOTALIZADOR, NÃO uma lista de transações. NUNCA extraia esses valores como itens. Os encargos reais (juros, multa, IOF, anuidade) já aparecem, COM DATA, na lista "Transações do cartão" / "Lançamentos do período" — pegue-os de lá. Extrair o resumo conta os encargos 2x e infla o total. REGRA PRÁTICA: um item só existe se tiver uma DATA de transação ao lado; linha de resumo/subtotal SEM data NÃO é item.
 
 VALIDAÇÃO ANTES DE RETORNAR: some amounts dos itens com chargedThisMonth=true. Deve ficar dentro de 2% do totalAmount global. Se errar muito, você provavelmente marcou parcelas futuras como deste mês — REVISE.
 

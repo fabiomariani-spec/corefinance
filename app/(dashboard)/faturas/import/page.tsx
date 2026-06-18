@@ -68,6 +68,9 @@ export default function FaturasPage() {
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [confirmed, setConfirmed] = useState<{ invoiceId: string; created: number; skipped: number } | null>(null);
+  // Trava de conciliação: só libera importar com divergência > 1 centavo se o
+  // usuário marcar ciência explícita (financeiro não fecha "no chute").
+  const [confirmAnyway, setConfirmAnyway] = useState(false);
   const [showAnalysis, setShowAnalysis] = useState(true);
   const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
   // Agrupamento visual por estabelecimento na lista de itens (não toca DB)
@@ -276,10 +279,13 @@ export default function FaturasPage() {
   const includedCredits = items.filter((i) => i.include && i.amount < 0).reduce((s, i) => s + i.amount, 0);
   const includedPurchases = items.filter((i) => i.include && i.amount > 0).reduce((s, i) => s + i.amount, 0);
   const reconciliationDiff = result ? Math.abs(includedTotal - result.totalAmount) : 0;
-  // Mesmo com chargedThisMonth filtrando, pode sobrar uns centavos de OCR.
-  // Tolerância: 0.5% do total ou R$ 1, o que for maior.
-  const reconciliationTolerance = result ? Math.max(1, result.totalAmount * 0.005) : 0.10;
-  const hasReconciliationIssue = result && reconciliationDiff > reconciliationTolerance;
+  // Financeiro: a soma dos itens incluídos TEM que bater com o total impresso da
+  // fatura no centavo. Tolerância de R$ 0,01 só cobre arredondamento. Acima
+  // disso a importação é BLOQUEADA (ver botão Confirmar) — exige revisão dos
+  // itens ou ciência explícita. Antes a tolerância era 0,5% (R$ 1.560 numa
+  // fatura de 312k), o que deixava passar erros de milhares de reais.
+  const reconciliationTolerance = 0.01;
+  const hasReconciliationIssue = result ? reconciliationDiff > reconciliationTolerance : false;
   const futureItemsCount = items.filter((i) => !i.chargedThisMonth).length;
 
   // Agrupa items por estabelecimento (merchantKey). Cada grupo guarda os
@@ -1027,12 +1033,40 @@ export default function FaturasPage() {
               </div>
             )}
 
+            {/* Trava de conciliação — bloqueia importar quando a soma dos itens
+                não fecha com o total impresso da fatura (no centavo). */}
+            {hasReconciliationIssue && (
+              <div className="flex items-start gap-2 p-4 rounded-lg bg-amber-950/40 border border-amber-900/60 text-amber-300 text-sm">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="space-y-2">
+                  <p>
+                    A soma dos {includedCount} itens selecionados é <strong>{formatCurrency(includedTotal)}</strong>,
+                    mas o total impresso da fatura é <strong>{formatCurrency(result!.totalAmount)}</strong> —
+                    diferença de <strong>{formatCurrency(reconciliationDiff)}</strong>. Revise os itens (algum sobrando,
+                    faltando ou com valor errado) antes de importar.
+                  </p>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={confirmAnyway}
+                      onChange={(e) => setConfirmAnyway(e.target.checked)}
+                      className="rounded"
+                    />
+                    Importar mesmo assim (estou ciente da diferença)
+                  </label>
+                </div>
+              </div>
+            )}
+
             {/* Actions */}
             <div className="flex items-center justify-between">
               <Button variant="outline" onClick={() => setStep("upload")}>
                 Voltar
               </Button>
-              <Button onClick={() => handleConfirm(false)} disabled={confirming || includedCount === 0}>
+              <Button
+                onClick={() => handleConfirm(false)}
+                disabled={confirming || includedCount === 0 || (hasReconciliationIssue && !confirmAnyway)}
+              >
                 {confirming ? (
                   <><Loader2 className="w-4 h-4 animate-spin" /> Importando...</>
                 ) : (
