@@ -1,3 +1,4 @@
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { withAuth } from "@/lib/api-handler";
 import { parseBRDate } from "@/lib/dates";
@@ -29,6 +30,7 @@ export const POST = withAuth(async ({ companyId, req }) => {
     items,
     summaryOnly,
     summaryCategoryId,
+    confirmAnyway,
   }: {
     creditCardId: string;
     referenceMonth: string;
@@ -38,10 +40,31 @@ export const POST = withAuth(async ({ companyId, req }) => {
     items: ConfirmItem[];
     summaryOnly?: boolean;
     summaryCategoryId?: string | null;
+    confirmAnyway?: boolean;
   } = body;
 
   // Parse reference month YYYY-MM → YYYYMM
   const refMonthInt = parseInt(referenceMonth.replace("-", ""));
+
+  // ── Revalidação SERVER-SIDE da conciliação ──────────────────────────────
+  // A trava da tela de import é client-side e pode ser burlada (retry, API
+  // direta). Aqui é a rede de segurança real: a soma dos itens incluídos TEM
+  // que bater com o total impresso no centavo, salvo ciência explícita
+  // (confirmAnyway). Não se aplica ao modo summaryOnly (1 transação = total).
+  if (!summaryOnly && !confirmAnyway && totalAmount > 0) {
+    const includedSum = (items ?? [])
+      .filter((it) => it.include)
+      .reduce((s, it) => s + it.amount, 0);
+    if (Math.abs(includedSum - totalAmount) > 0.01) {
+      return NextResponse.json(
+        {
+          error: `Conciliação falhou: a soma dos itens selecionados (R$ ${includedSum.toFixed(2)}) não bate com o total da fatura (R$ ${totalAmount.toFixed(2)}). Revise os itens ou confirme ciente da diferença.`,
+          reconciliation: { includedSum, totalAmount, diff: Number((includedSum - totalAmount).toFixed(2)) },
+        },
+        { status: 400 },
+      );
+    }
+  }
 
   // Serializa confirms concorrentes da MESMA fatura. Sem isso, dois cliques no
   // botão (ou retry da rede) rodam o batch em paralelo, cada um lê o banco
@@ -79,6 +102,16 @@ export const POST = withAuth(async ({ companyId, req }) => {
         },
       });
       invoiceId = invoice.id;
+    }
+
+    // Substituição na reimportação: se a fatura já existia, remove os lançamentos
+    // NÃO PAGOS da importação anterior antes de recriar — impede que reimportar a
+    // MESMA fatura DOBRE os lançamentos (antes só acumulava). Os já pagos são
+    // preservados (o dedupe abaixo evita recriá-los) pra não desfazer conciliação.
+    if (existingInvoice) {
+      await tx.transaction.deleteMany({
+        where: { companyId, importedFromInvoiceId: invoiceId, paymentDate: null },
+      });
     }
 
     // Modo "Importar só o total": cria UMA transação consolidada, ignora itens.

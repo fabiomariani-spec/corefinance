@@ -128,6 +128,7 @@ export default function FaturasPage() {
     if (!file || !selectedCard) return;
     setStep("processing");
     setError(null);
+    setConfirmAnyway(false); // cada fatura começa com a trava armada
 
     const formData = new FormData();
     formData.append("file", file);
@@ -212,6 +213,9 @@ export default function FaturasPage() {
           totalAmount: result.totalAmount,
           items: summaryOnly ? [] : items,
           summaryOnly,
+          // Repassa a ciência da divergência pro servidor (que revalida a
+          // conciliação por conta própria — a trava da tela não basta).
+          confirmAnyway,
         }),
       });
 
@@ -1104,6 +1108,7 @@ export default function FaturasPage() {
                   setResult(null);
                   setItems([]);
                   setConfirmed(null);
+                  setConfirmAnyway(false); // senão a trava fica pré-furada na próxima fatura
                 }}
               >
                 Nova Importação
