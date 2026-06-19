@@ -120,6 +120,8 @@ export default async (req: Request) => {
       referenceMonth: extracted.referenceMonth,
       dueDate: extracted.dueDate,
       cardLastFour: extracted.cardLastFour,
+      // Resumo da fatura (rotativo): resuminho + conciliação por compras.
+      summary: extracted.summary,
       creditCard,
       categories,
     };

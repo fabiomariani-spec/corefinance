@@ -74,6 +74,12 @@ interface InvoiceDetail {
     closingDay: number;
     dueDay: number;
   };
+  summary: {
+    previousBalance: number | null;
+    paymentsCredits: number | null;
+    purchasesDebits: number | null;
+    totalToPay: number | null;
+  } | null;
   transactionsCount: number;
   transactions: InvoiceTransaction[];
 }
@@ -407,6 +413,37 @@ export default function InvoiceDetailPage() {
             </div>
           ))}
         </div>
+
+        {/* Resumo da fatura (rotativo) — saldo anterior + compras − pagamentos = total a pagar.
+            Os pagamentos/adiantamentos NÃO viram lançamento; aparecem só aqui.
+            Só aparece quando é rotativo de fato (tem saldo anterior ou pagamento). */}
+        {invoice.summary &&
+          (((invoice.summary.previousBalance ?? 0) > 0.01) || ((invoice.summary.paymentsCredits ?? 0) > 0.01)) && (
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+            <p className="text-xs text-zinc-500 mb-3">Resumo da fatura</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+              <div className="flex flex-col">
+                <span className="text-xs text-zinc-500">Saldo anterior</span>
+                <span className="font-semibold text-zinc-100 tabular-nums">{formatCurrency(invoice.summary.previousBalance ?? 0)}</span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-xs text-zinc-500">(+) Compras do mês</span>
+                <span className="font-semibold text-zinc-100 tabular-nums">{formatCurrency(invoice.summary.purchasesDebits ?? 0)}</span>
+              </div>
+              <div className="flex flex-col">
+                <span className="text-xs text-zinc-500">(−) Pagamentos / créditos</span>
+                <span className="font-semibold text-emerald-400 tabular-nums">{formatCurrency(invoice.summary.paymentsCredits ?? 0)}</span>
+              </div>
+              <div className="flex flex-col md:items-end md:border-l md:border-zinc-800 md:pl-4">
+                <span className="text-xs text-zinc-500">(=) Total a pagar</span>
+                <span className="font-semibold text-zinc-100 tabular-nums text-lg">{formatCurrency(invoice.summary.totalToPay ?? 0)}</span>
+              </div>
+            </div>
+            <p className="mt-3 text-[11px] text-zinc-600">
+              As <strong className="text-zinc-400">compras do mês</strong> são os lançamentos vinculados abaixo (cada um categorizado). Saldo anterior e pagamentos/adiantamentos ficam só neste resumo — não viram lançamento.
+            </p>
+          </div>
+        )}
 
         {/* Transactions table */}
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">

@@ -73,6 +73,20 @@ export const GET = withAuth<{ id: string }>(async ({ companyId, params }) => {
     createdAt: invoice.createdAt,
     updatedAt: invoice.updatedAt,
     creditCard: invoice.creditCard,
+    // "Resumo da fatura" (rotativo) — saldo anterior, pagamentos/créditos e
+    // compras do período. Informativo; o total efetivo segue sendo o derivado
+    // dos lançamentos (computedTotal). null se a fatura não tem resumo.
+    summary:
+      invoice.previousBalance != null ||
+      invoice.paymentsCredits != null ||
+      invoice.purchasesDebits != null
+        ? {
+            previousBalance: invoice.previousBalance != null ? Number(invoice.previousBalance) : null,
+            paymentsCredits: invoice.paymentsCredits != null ? Number(invoice.paymentsCredits) : null,
+            purchasesDebits: invoice.purchasesDebits != null ? Number(invoice.purchasesDebits) : null,
+            totalToPay: Number(invoice.totalAmount),
+          }
+        : null,
     transactionsCount: transactions.length,
     transactions: transactions.map((t) => ({
       ...t,

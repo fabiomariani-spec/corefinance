@@ -45,11 +45,18 @@ interface ExtractedItem {
   confidence: number | null;
   include: boolean;
 }
+interface InvoiceSummary {
+  previousBalance: number | null;
+  paymentsCredits: number | null;
+  purchasesDebits: number | null;
+  totalToPay: number | null;
+}
 interface ExtractionResult {
   items: ExtractedItem[];
   totalAmount: number;
   referenceMonth: string | null;
   dueDate: string | null;
+  summary: InvoiceSummary | null;
   categories: { id: string; name: string }[];
   creditCard: { id: string; name: string; brand: string };
 }
@@ -212,6 +219,9 @@ export default function FaturasPage() {
           paymentDate: editPaymentDate || null,
           totalAmount: result.totalAmount,
           items: summaryOnly ? [] : items,
+          // Resumo da fatura (rotativo) — pro resuminho persistido e pra
+          // conciliação por compras revalidada no servidor.
+          summary: result.summary,
           summaryOnly,
           // Repassa a ciência da divergência pro servidor (que revalida a
           // conciliação por conta própria — a trava da tela não basta).
@@ -282,12 +292,25 @@ export default function FaturasPage() {
   const includedTotal = items.filter((i) => i.include).reduce((s, i) => s + i.amount, 0);
   const includedCredits = items.filter((i) => i.include && i.amount < 0).reduce((s, i) => s + i.amount, 0);
   const includedPurchases = items.filter((i) => i.include && i.amount > 0).reduce((s, i) => s + i.amount, 0);
-  const reconciliationDiff = result ? Math.abs(includedTotal - result.totalAmount) : 0;
-  // Financeiro: a soma dos itens incluídos TEM que bater com o total impresso da
-  // fatura no centavo. Tolerância de R$ 0,01 só cobre arredondamento. Acima
-  // disso a importação é BLOQUEADA (ver botão Confirmar) — exige revisão dos
-  // itens ou ciência explícita. Antes a tolerância era 0,5% (R$ 1.560 numa
-  // fatura de 312k), o que deixava passar erros de milhares de reais.
+
+  // Conciliação. Duas réguas, conforme a fatura:
+  // • COM resumo de compras (rotativa: tem saldo anterior/pagamento no período)
+  //   → concilia pelas COMPRAS do mês (includedPurchases vs purchasesDebits). O
+  //   "total a pagar" = saldo anterior + compras − pagamentos, então NÃO serve
+  //   de régua — só aparece no resuminho.
+  // • SEM resumo (à vista) → soma de tudo (compras − estornos) bate com o total.
+  // Tolerância R$ 0,01 (só arredondamento). Acima disso a importação é BLOQUEADA.
+  const purchasesDebits = result?.summary?.purchasesDebits ?? null;
+  const reconcileByPurchases = purchasesDebits != null && purchasesDebits > 0;
+  // "Rotativo de fato" = tem saldo anterior OU pagamento no período. Só aí o
+  // resuminho (saldo/pagamentos) agrega informação; em fatura à vista ele seria
+  // só zeros. A régua por compras (reconcileByPurchases) roda independente disso.
+  const isRotativo =
+    !!result?.summary &&
+    (((result.summary.previousBalance ?? 0) > 0.01) || ((result.summary.paymentsCredits ?? 0) > 0.01));
+  const reconciliationTarget = reconcileByPurchases ? purchasesDebits : (result?.totalAmount ?? 0);
+  const reconciliationActual = reconcileByPurchases ? includedPurchases : includedTotal;
+  const reconciliationDiff = result ? Math.abs(reconciliationActual - reconciliationTarget) : 0;
   const reconciliationTolerance = 0.01;
   const hasReconciliationIssue = result ? reconciliationDiff > reconciliationTolerance : false;
   const futureItemsCount = items.filter((i) => !i.chargedThisMonth).length;
@@ -649,39 +672,78 @@ export default function FaturasPage() {
               </span>
             </div>
 
-            {/* Resumo financeiro — compras + créditos = total */}
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
-              <p className="text-xs text-zinc-500 mb-3">Resumo financeiro</p>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                <div className="flex flex-col">
-                  <span className="text-xs text-zinc-500">Compras</span>
+            {/* Resuminho da fatura (rotativa) — saldo anterior + compras − pagamentos = total a pagar.
+                Concilia pelas COMPRAS do mês. Saldo anterior e pagamentos NÃO viram lançamento. */}
+            {isRotativo && result.summary ? (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                <p className="text-xs text-zinc-500 mb-3">Resumo da fatura</p>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  <div className="flex flex-col">
+                    <span className="text-xs text-zinc-500">Saldo anterior</span>
+                    <span className="font-semibold text-zinc-100 tabular-nums">{formatCurrency(result.summary.previousBalance ?? 0)}</span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-xs text-zinc-500">(+) Compras do mês</span>
+                    <span className="font-semibold text-zinc-100 tabular-nums">{formatCurrency(result.summary.purchasesDebits ?? 0)}</span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-xs text-zinc-500">(−) Pagamentos / créditos</span>
+                    <span className="font-semibold text-emerald-400 tabular-nums">{formatCurrency(result.summary.paymentsCredits ?? 0)}</span>
+                  </div>
+                  <div className="flex flex-col md:items-end md:border-l md:border-zinc-800 md:pl-4">
+                    <span className="text-xs text-zinc-500">(=) Total a pagar</span>
+                    <span className="font-semibold text-zinc-100 tabular-nums text-lg">{formatCurrency(result.summary.totalToPay ?? result.totalAmount)}</span>
+                  </div>
+                </div>
+                <div className="mt-3 pt-3 border-t border-zinc-800 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                  <span className="text-zinc-500">Compras selecionadas:</span>
                   <span className="font-semibold text-zinc-100 tabular-nums">{formatCurrency(includedPurchases)}</span>
-                </div>
-                <div className="flex flex-col">
-                  <span className="text-xs text-zinc-500">Créditos / Estornos</span>
-                  <span className={`font-semibold tabular-nums ${includedCredits < 0 ? "text-emerald-400" : "text-zinc-100"}`}>
-                    {formatCurrency(includedCredits)}
-                  </span>
-                </div>
-                <div className="flex flex-col md:items-end md:border-l md:border-zinc-800 md:pl-4">
-                  <span className="text-xs text-zinc-500">Total</span>
-                  <span className="font-semibold text-zinc-100 tabular-nums text-lg">{formatCurrency(includedTotal)}</span>
-                  {result && Math.abs(includedTotal - result.totalAmount) > 0.01 && (
-                    <span className="text-xs text-zinc-500 mt-0.5">
-                      fatura impressa: {formatCurrency(result.totalAmount)}
-                    </span>
+                  {hasReconciliationIssue ? (
+                    <span className="text-amber-400">≠ compras do período {formatCurrency(purchasesDebits!)} (dif. {formatCurrency(reconciliationDiff)})</span>
+                  ) : (
+                    <span className="text-emerald-400">✓ confere com as compras do período</span>
                   )}
                 </div>
+                <p className="mt-2 text-[11px] text-zinc-600">
+                  Importamos as <strong className="text-zinc-400">compras do mês</strong>, cada uma categorizada. Saldo anterior e pagamentos ficam só neste resumo — não viram lançamento, pra não inflar receita nem despesa.
+                </p>
               </div>
-            </div>
+            ) : (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-4">
+                <p className="text-xs text-zinc-500 mb-3">Resumo financeiro</p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                  <div className="flex flex-col">
+                    <span className="text-xs text-zinc-500">Compras</span>
+                    <span className="font-semibold text-zinc-100 tabular-nums">{formatCurrency(includedPurchases)}</span>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-xs text-zinc-500">Créditos / Estornos</span>
+                    <span className={`font-semibold tabular-nums ${includedCredits < 0 ? "text-emerald-400" : "text-zinc-100"}`}>
+                      {formatCurrency(includedCredits)}
+                    </span>
+                  </div>
+                  <div className="flex flex-col md:items-end md:border-l md:border-zinc-800 md:pl-4">
+                    <span className="text-xs text-zinc-500">Total</span>
+                    <span className="font-semibold text-zinc-100 tabular-nums text-lg">{formatCurrency(includedTotal)}</span>
+                    {result && Math.abs(includedTotal - result.totalAmount) > 0.01 && (
+                      <span className="text-xs text-zinc-500 mt-0.5">
+                        fatura impressa: {formatCurrency(result.totalAmount)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
 
-            {/* Reconciliation banner — só aparece quando a divergência é >1%.
+            {/* Reconciliation banner — só aparece quando a divergência é >1 centavo.
                 Discreto, informativo, sem alarme. */}
             {hasReconciliationIssue && (
               <div className="flex items-start gap-2 p-3 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-400">
                 <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-zinc-500" />
                 <span>
-                  Soma dos selecionados {formatCurrency(includedTotal)} · fatura impressa {formatCurrency(result!.totalAmount)} · diferença <strong className="text-zinc-300">{formatCurrency(reconciliationDiff)}</strong>. Pode ser parcela futura, encargo ou crédito não capturado — verifique as seções abaixo.
+                  {reconcileByPurchases
+                    ? <>Compras selecionadas {formatCurrency(includedPurchases)} · compras do período {formatCurrency(reconciliationTarget)} · diferença <strong className="text-zinc-300">{formatCurrency(reconciliationDiff)}</strong>. Pode ser parcela futura ou compra não capturada — verifique as seções abaixo.</>
+                    : <>Soma dos selecionados {formatCurrency(includedTotal)} · fatura impressa {formatCurrency(result!.totalAmount)} · diferença <strong className="text-zinc-300">{formatCurrency(reconciliationDiff)}</strong>. Pode ser parcela futura, encargo ou crédito não capturado — verifique as seções abaixo.</>}
                 </span>
               </div>
             )}
@@ -1044,10 +1106,17 @@ export default function FaturasPage() {
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                 <div className="space-y-2">
                   <p>
-                    A soma dos {includedCount} itens selecionados é <strong>{formatCurrency(includedTotal)}</strong>,
-                    mas o total impresso da fatura é <strong>{formatCurrency(result!.totalAmount)}</strong> —
-                    diferença de <strong>{formatCurrency(reconciliationDiff)}</strong>. Revise os itens (algum sobrando,
-                    faltando ou com valor errado) antes de importar.
+                    {reconcileByPurchases ? (
+                      <>As compras selecionadas somam <strong>{formatCurrency(includedPurchases)}</strong>,
+                      mas as compras do período (Resumo da fatura) são <strong>{formatCurrency(reconciliationTarget)}</strong> —
+                      diferença de <strong>{formatCurrency(reconciliationDiff)}</strong>. Revise os itens (alguma compra sobrando,
+                      faltando ou com valor errado) antes de importar.</>
+                    ) : (
+                      <>A soma dos {includedCount} itens selecionados é <strong>{formatCurrency(includedTotal)}</strong>,
+                      mas o total impresso da fatura é <strong>{formatCurrency(result!.totalAmount)}</strong> —
+                      diferença de <strong>{formatCurrency(reconciliationDiff)}</strong>. Revise os itens (algum sobrando,
+                      faltando ou com valor errado) antes de importar.</>
+                    )}
                   </p>
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input

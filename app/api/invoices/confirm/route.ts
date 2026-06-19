@@ -2,7 +2,16 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { withAuth } from "@/lib/api-handler";
 import { parseBRDate } from "@/lib/dates";
+import { isInvoicePaymentDescription } from "@/lib/claude";
 import type { Prisma } from "@prisma/client";
+
+// Resumo da fatura (totalizadores) — só informativo / pra conciliar por compras.
+interface InvoiceSummaryInput {
+  previousBalance: number | null;
+  paymentsCredits: number | null;
+  purchasesDebits: number | null;
+  totalToPay: number | null;
+}
 
 // Confirm pode demorar pra fatura com 500+ itens. Bumpa pra 240s.
 export const maxDuration = 240;
@@ -28,6 +37,7 @@ export const POST = withAuth(async ({ companyId, req }) => {
     paymentDate,
     totalAmount,
     items,
+    summary,
     summaryOnly,
     summaryCategoryId,
     confirmAnyway,
@@ -38,6 +48,7 @@ export const POST = withAuth(async ({ companyId, req }) => {
     paymentDate: string | null;
     totalAmount: number;
     items: ConfirmItem[];
+    summary?: InvoiceSummaryInput | null;
     summaryOnly?: boolean;
     summaryCategoryId?: string | null;
     confirmAnyway?: boolean;
@@ -48,21 +59,56 @@ export const POST = withAuth(async ({ companyId, req }) => {
 
   // ── Revalidação SERVER-SIDE da conciliação ──────────────────────────────
   // A trava da tela de import é client-side e pode ser burlada (retry, API
-  // direta). Aqui é a rede de segurança real: a soma dos itens incluídos TEM
-  // que bater com o total impresso no centavo, salvo ciência explícita
+  // direta). Aqui é a rede de segurança real, salvo ciência explícita
   // (confirmAnyway). Não se aplica ao modo summaryOnly (1 transação = total).
-  if (!summaryOnly && !confirmAnyway && totalAmount > 0) {
-    const includedSum = (items ?? [])
-      .filter((it) => it.include)
-      .reduce((s, it) => s + it.amount, 0);
-    if (Math.abs(includedSum - totalAmount) > 0.01) {
-      return NextResponse.json(
-        {
-          error: `Conciliação falhou: a soma dos itens selecionados (R$ ${includedSum.toFixed(2)}) não bate com o total da fatura (R$ ${totalAmount.toFixed(2)}). Revise os itens ou confirme ciente da diferença.`,
-          reconciliation: { includedSum, totalAmount, diff: Number((includedSum - totalAmount).toFixed(2)) },
-        },
-        { status: 400 },
-      );
+  //
+  // REGRA DE OURO: a régua soma EXATAMENTE o conjunto que será persistido
+  // (mesmo predicado de `includedItems`/`toCreate` abaixo) — incluído, com data
+  // válida e que NÃO é pagamento/adiantamento. Assim "confere" nunca mente: não
+  // existe item que entra na soma mas some na criação (nem o contrário).
+  //
+  // Duas réguas, conforme a fatura:
+  // • COM resumo de compras (rotativa: tem saldo anterior/pagamento no período)
+  //   → concilia pelas COMPRAS do mês (amount>0): soma deve bater com
+  //   summary.purchasesDebits. O "total a pagar" NÃO serve de régua aqui
+  //   (= saldo anterior + compras − pagamentos), só vai pro resuminho.
+  // • SEM resumo (à vista) → soma de tudo que será criado (compras − estornos)
+  //   bate com o total.
+  const validItemDate = (d: string): boolean => {
+    const parsed = parseBRDate(d);
+    return !!parsed && !isNaN(parsed.getTime());
+  };
+  const willCreate = (it: ConfirmItem): boolean =>
+    it.include && !isInvoicePaymentDescription(it.description) && validItemDate(it.date);
+  const purchasesDebits = summary?.purchasesDebits ?? null;
+  if (!summaryOnly && !confirmAnyway) {
+    if (purchasesDebits != null) {
+      // Rotativa (alvo = compras do período; inclusive 0, que é caso legítimo).
+      const includedPurchases = (items ?? [])
+        .filter((it) => willCreate(it) && it.amount > 0)
+        .reduce((s, it) => s + it.amount, 0);
+      if (Math.abs(includedPurchases - purchasesDebits) > 0.01) {
+        return NextResponse.json(
+          {
+            error: `Conciliação falhou: a soma das compras selecionadas (R$ ${includedPurchases.toFixed(2)}) não bate com as compras do período (R$ ${purchasesDebits.toFixed(2)}). Revise os itens ou confirme ciente da diferença.`,
+            reconciliation: { includedPurchases, purchasesDebits, diff: Number((includedPurchases - purchasesDebits).toFixed(2)) },
+          },
+          { status: 400 },
+        );
+      }
+    } else if (totalAmount > 0) {
+      const includedSum = (items ?? [])
+        .filter(willCreate)
+        .reduce((s, it) => s + it.amount, 0);
+      if (Math.abs(includedSum - totalAmount) > 0.01) {
+        return NextResponse.json(
+          {
+            error: `Conciliação falhou: a soma dos itens selecionados (R$ ${includedSum.toFixed(2)}) não bate com o total da fatura (R$ ${totalAmount.toFixed(2)}). Revise os itens ou confirme ciente da diferença.`,
+            reconciliation: { includedSum, totalAmount, diff: Number((includedSum - totalAmount).toFixed(2)) },
+          },
+          { status: 400 },
+        );
+      }
     }
   }
 
@@ -103,6 +149,22 @@ export const POST = withAuth(async ({ companyId, req }) => {
       });
       invoiceId = invoice.id;
     }
+
+    // Persiste o "Resumo da fatura" (saldo anterior, créditos/pagamentos,
+    // compras/débitos) — informativo pro resuminho e base da conciliação por
+    // compras. Atualiza em toda (re)importação. null quando a fatura não traz.
+    // totalAmount (total a pagar) também é reescrito aqui senão, numa reimportação,
+    // o resuminho mostraria saldo/compras/pagamentos novos com "total a pagar"
+    // congelado da 1ª importação — a identidade deixaria de fechar.
+    await tx.creditCardInvoice.update({
+      where: { id: invoiceId },
+      data: {
+        totalAmount,
+        previousBalance: summary?.previousBalance ?? null,
+        paymentsCredits: summary?.paymentsCredits ?? null,
+        purchasesDebits: summary?.purchasesDebits ?? null,
+      },
+    });
 
     // Substituição na reimportação: se a fatura já existia, remove os lançamentos
     // NÃO PAGOS da importação anterior antes de recriar — impede que reimportar a
@@ -146,8 +208,15 @@ export const POST = withAuth(async ({ companyId, req }) => {
       };
     }
 
-    // Create transactions for included items — em lote, não num for await
-    const includedItems = items.filter((item) => item.include);
+    // Create transactions for included items — em lote, não num for await.
+    // Blindagem (rede de segurança real): pagamento/adiantamento da fatura NUNCA
+    // vira lançamento, mesmo que o usuário marque o item à mão. É quitação de
+    // dívida (movimento de caixa), não despesa nem receita — entrava como INCOME
+    // e inflava o faturamento ("receita fantasma"). O valor vive só no resuminho
+    // (previousBalance/paymentsCredits/purchasesDebits da fatura).
+    const includedItems = items.filter(
+      (item) => item.include && !isInvoicePaymentDescription(item.description),
+    );
     const isPaid = !!paymentDate;
     const paymentDateParsed = paymentDate ? parseBRDate(paymentDate) : null;
     const dueDateParsed = parseBRDate(dueDate);
@@ -175,7 +244,11 @@ export const POST = withAuth(async ({ companyId, req }) => {
     let skipped = 0;
     for (const item of includedItems) {
       const competence = parseBRDate(item.date);
-      if (!competence) continue;
+      // Pula data ausente OU malformada. Sem o isNaN, uma data tipo "31/06"
+      // vira Invalid Date (truthy) e o dupKey() abaixo chama toISOString() →
+      // RangeError, que abortaria toda a $transaction. (A régua de conciliação
+      // usa o mesmo critério de data válida, então o que conta = o que cria.)
+      if (!competence || isNaN(competence.getTime())) continue;
       const description = item.establishment
         ? `${item.description} — ${item.establishment}`
         : item.description;

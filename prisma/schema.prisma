@@ -337,6 +337,12 @@ model CreditCardInvoice {
   closingDate    DateTime
   dueDate        DateTime
   totalAmount    Decimal       @db.Decimal(15, 2)
+  // "Resumo da fatura" (rotativo): informativos pro resuminho e pra conciliar
+  // por compras. null em fatura sem o bloco de resumo. O gasto/total efetivo
+  // continua derivado da soma dos lançamentos vinculados (compras − estornos).
+  previousBalance Decimal?     @db.Decimal(15, 2)  // saldo anterior
+  paymentsCredits Decimal?     @db.Decimal(15, 2)  // (-) créditos/pagamentos do período
+  purchasesDebits Decimal?     @db.Decimal(15, 2)  // (+) compras/débitos do período
   status         InvoiceStatus @default(OPEN)
   fileUrl        String?
   fileName       String?

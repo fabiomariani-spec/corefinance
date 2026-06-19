@@ -24,12 +24,24 @@ export interface ExtractedInvoiceItem {
   suggestedCategory: string | null;
 }
 
+// Bloco "Resumo da fatura" (totalizadores). NÃO são itens/lançamentos —
+// servem pro "resuminho" informativo e pra conciliar por compras em fatura
+// rotativa, onde a soma das compras ≠ total a pagar (há saldo anterior e
+// pagamentos no meio). Campos null quando a fatura não traz o bloco.
+export interface InvoiceSummary {
+  previousBalance: number | null;   // "Saldo anterior"
+  paymentsCredits: number | null;   // "(-) Créditos/Pagamentos" do período (valor POSITIVO)
+  purchasesDebits: number | null;   // "(+) Compras/Débitos" do período
+  totalToPay: number | null;        // "(=) Total a pagar"
+}
+
 export interface InvoiceExtractionResult {
   items: ExtractedInvoiceItem[];
   totalAmount: number;
   referenceMonth: string | null;
   dueDate: string | null;
   cardLastFour: string | null;
+  summary: InvoiceSummary | null;
   rawText: string;
 }
 
@@ -74,9 +86,18 @@ Pra cada item:
 
 ⚠️ ARMADILHA #3 (CRÍTICA — duplica encargos): a seção "Resumo da fatura" / "Resumo" — o bloco que lista TOTAIS agregados ("Compras nacionais", "Compras internacionais", "Juros de financiamento", "Multas por atraso", "IOF", "Valores creditados") e termina em "Total a pagar" — é um TOTALIZADOR, NÃO uma lista de transações. NUNCA extraia esses valores como itens. Os encargos reais (juros, multa, IOF, anuidade) já aparecem, COM DATA, na lista "Transações do cartão" / "Lançamentos do período" — pegue-os de lá. Extrair o resumo conta os encargos 2x e infla o total. REGRA PRÁTICA: um item só existe se tiver uma DATA de transação ao lado; linha de resumo/subtotal SEM data NÃO é item.
 
-VALIDAÇÃO ANTES DE RETORNAR: some amounts dos itens com chargedThisMonth=true. Deve ficar dentro de 2% do totalAmount global. Se errar muito, você provavelmente marcou parcelas futuras como deste mês — REVISE.
+⚠️ ARMADILHA #4 (pagamento/adiantamento NÃO é lançamento): "PAGAMENTO ANTECIPADO" / "PAGTO ANTECIPADO PIX" / "PAGAMENTO DE FATURA" / "PAGTO POR DEB EM C/C" — é o dinheiro que o cliente mandou pro cartão (quitação de dívida), NÃO é compra nem receita. NÃO conte como item do mês (chargedThisMonth=FALSE). O valor dele vai SÓ no campo \`summary.paymentsCredits\` (ver abaixo).
 
-Campos globais: totalAmount (valor "Total a pagar" exato), referenceMonth (YYYY-MM), dueDate (YYYY-MM-DD), cardLastFour.
+📋 RESUMO DA FATURA (campo \`summary\`): capture os totalizadores do bloco "Resumo da fatura" (aquele que a Armadilha #3 manda NÃO virar item) num objeto \`summary\` com:
+- previousBalance: "Saldo anterior" (saldo que rolou da fatura passada)
+- paymentsCredits: total de "(-) Créditos/Pagamentos" / "Pagamentos e créditos" do período — sempre POSITIVO
+- purchasesDebits: total de "(+) Compras/Débitos" / "Compras e saques" lançados no período
+- totalToPay: "(=) Total" / "Total a pagar"
+Use null em cada campo que a fatura NÃO trouxer. Em fatura simples (à vista, sem saldo anterior nem pagamento no período) o bloco pode nem existir → \`summary\` com campos null é aceitável. ATENÇÃO: capturar no \`summary\` NÃO é o mesmo que virar item — os valores do resumo continuam PROIBIDOS na lista \`items\` (Armadilha #3).
+
+VALIDAÇÃO ANTES DE RETORNAR: some amounts dos itens com chargedThisMonth=true (apenas compras/débitos, sem pagamentos). Em fatura à vista, deve ficar dentro de 2% do totalAmount. Em fatura COM "Saldo anterior" ou "Pagamento(s)" no período (rotativa), a soma das compras bate com \`summary.purchasesDebits\`, NÃO com o "Total a pagar" — isso é esperado.
+
+Campos globais: totalAmount (valor "Total a pagar" exato), referenceMonth (YYYY-MM), dueDate (YYYY-MM-DD), cardLastFour, summary (objeto acima ou todos os campos null).
 
 RESPONDA SOMENTE com JSON minificado, sem espaços/quebras, sem texto fora.`;
 
@@ -207,6 +228,9 @@ async function extractInvoiceFromPages(pages: string[]): Promise<InvoiceExtracti
       referenceMonth: results.find((r) => r.referenceMonth)?.referenceMonth ?? null,
       dueDate: results.find((r) => r.dueDate)?.dueDate ?? null,
       cardLastFour: results.find((r) => r.cardLastFour)?.cardLastFour ?? null,
+      // Resumo costuma estar numa só página, mas pode partir na emenda de 2
+      // chunks → coalesce campo-a-campo em vez de pegar só o 1º.
+      summary: mergeSummaries(results),
       rawText: results.map((r) => r.rawText).join("\n---\n"),
     };
   }
@@ -231,15 +255,16 @@ async function extractInvoiceFromPages(pages: string[]): Promise<InvoiceExtracti
   return merged;
 }
 
-// Detecta créditos / pagamentos antecipados no "Resumo da fatura" via regex,
+// Detecta créditos (estorno/cashback/devolução) no "Resumo da fatura" via regex,
 // pra garantir que entrem mesmo quando a IA não captura em chunking.
+// NÃO injeta "Pagamento antecipado"/"Pagamento de fatura": pagamento é quitação
+// de dívida, não crédito do mês — vai pro summary.paymentsCredits, não vira item.
 function scanKnownCreditsFromText(text: string): ExtractedInvoiceItem[] {
   const credits: ExtractedInvoiceItem[] = [];
-  // Padrões: "(-) 90.105,41Pagamento antecipado" / "(-) 101,69Estornos / Crédito"
-  // Também aceita "Pagamento antecipado(-) 90.105,41" (descrição antes do valor).
+  // Padrões: "(-) 101,69Estornos / Crédito" / "Cashback(-) 12,00"
   const patterns = [
-    /\(-\)\s*([\d.]+,\d{2})\s*(Pagamento antecipado|Estornos?\s*\/?\s*Cr[eé]dito[^\n]{0,40}|Valor remanescente[^\n]{0,60}|Cashback[^\n]{0,40})/gi,
-    /(Pagamento antecipado|Estornos?\s*\/?\s*Cr[eé]dito[^\n]{0,40}|Valor remanescente[^\n]{0,60}|Cashback[^\n]{0,40})\s*\(-\)\s*([\d.]+,\d{2})/gi,
+    /\(-\)\s*([\d.]+,\d{2})\s*(Estornos?\s*\/?\s*Cr[eé]dito[^\n]{0,40}|Cashback[^\n]{0,40})/gi,
+    /(Estornos?\s*\/?\s*Cr[eé]dito[^\n]{0,40}|Cashback[^\n]{0,40})\s*\(-\)\s*([\d.]+,\d{2})/gi,
   ];
   const seen = new Set<string>();
   for (const re of patterns) {
@@ -389,6 +414,7 @@ async function extractInvoiceFromPdfVision(pdfBase64: string): Promise<InvoiceEx
     referenceMonth: results.find((r) => r.referenceMonth)?.referenceMonth ?? null,
     dueDate: results.find((r) => r.dueDate)?.dueDate ?? null,
     cardLastFour: results.find((r) => r.cardLastFour)?.cardLastFour ?? null,
+    summary: mergeSummaries(results),
     rawText: results.map((r) => r.rawText).join("\n---\n"),
   };
 }
@@ -445,12 +471,19 @@ const PREPAYMENT_DESCRIPTION_PATTERNS = [
   /antecipa[cç][aã]o de pagamento/i,
 ];
 
-function isPaymentDescription(description: string): boolean {
+export function isPaymentDescription(description: string): boolean {
   return PAYMENT_DESCRIPTION_PATTERNS.some((re) => re.test(description));
 }
 
-function isPrepaymentDescription(description: string): boolean {
+export function isPrepaymentDescription(description: string): boolean {
   return PREPAYMENT_DESCRIPTION_PATTERNS.some((re) => re.test(description));
+}
+
+// Pagamento OU adiantamento da fatura: qualquer um deles é quitação de dívida
+// (movimento de caixa), nunca despesa/receita. Não vira lançamento — vai pro
+// resuminho (summary.paymentsCredits). Usado no claude.ts e no confirm.
+export function isInvoicePaymentDescription(description: string): boolean {
+  return isPaymentDescription(description) || isPrepaymentDescription(description);
 }
 
 // Derive chargedThisMonth from section header. Patterns que indicam que o item
@@ -532,20 +565,18 @@ function parseExtractionResponse(rawText: string): InvoiceExtractionResult {
     referenceMonth?: string | null;
     dueDate?: string | null;
     cardLastFour?: string | null;
+    summary?: unknown;
   };
   // Reescreve section/chargedThisMonth de forma determinística:
-  // 1. Pagamento da fatura anterior ("Inclusao de Pagamento", "PAGTO POR DEB") →
-  //    forçado pra "Pagamentos efetuados" + amount negativo (NÃO conta no total)
-  // 2. Pagamento antecipado da fatura atual → "Valores creditados" + amount negativo
-  //    (CONTA no total, como crédito)
-  // 3. chargedThisMonth deriva da section (não confia no flag bruto da IA)
+  // 1. Pagamento OU adiantamento da fatura ("Inclusao de Pagamento", "PAGTO POR
+  //    DEB", "Pagamento antecipado") → "Pagamentos efetuados" + amount negativo +
+  //    NÃO conta no mês. É quitação de dívida, não despesa/receita: vai pro
+  //    resuminho (summary.paymentsCredits), não vira lançamento.
+  // 2. chargedThisMonth deriva da section (não confia no flag bruto da IA)
   const items = (p.items ?? []).map((it) => {
     let section = it.section ?? null;
     let amount = it.amount;
-    if (isPrepaymentDescription(it.description)) {
-      section = "Valores creditados";
-      if (amount > 0) amount = -amount;
-    } else if (isPaymentDescription(it.description)) {
+    if (isInvoicePaymentDescription(it.description)) {
       section = "Pagamentos efetuados";
       if (amount > 0) amount = -amount;
     }
@@ -563,7 +594,63 @@ function parseExtractionResponse(rawText: string): InvoiceExtractionResult {
     referenceMonth: p.referenceMonth ?? null,
     dueDate: p.dueDate ?? null,
     cardLastFour: p.cardLastFour ?? null,
+    summary: parseSummary(p.summary),
     rawText,
+  };
+}
+
+// Junta os summaries de vários chunks campo-a-campo (1º não-nulo de cada campo).
+// Em faturas grandes (chunked), o bloco "Resumo da fatura" pode cair na emenda
+// de 2 chunks e ser capturado partido; `find` pegaria só um e descartaria o
+// resto. Coalescer por campo reconstrói o resumo. Retorna null se nada veio.
+function mergeSummaries(results: InvoiceExtractionResult[]): InvoiceSummary | null {
+  const pick = (key: keyof InvoiceSummary): number | null => {
+    for (const r of results) {
+      const v = r.summary?.[key];
+      if (v != null) return v;
+    }
+    return null;
+  };
+  const previousBalance = pick("previousBalance");
+  const paymentsCredits = pick("paymentsCredits");
+  const purchasesDebits = pick("purchasesDebits");
+  const totalToPay = pick("totalToPay");
+  if (
+    previousBalance === null &&
+    paymentsCredits === null &&
+    purchasesDebits === null &&
+    totalToPay === null
+  ) {
+    return null;
+  }
+  return { previousBalance, paymentsCredits, purchasesDebits, totalToPay };
+}
+
+// Normaliza o objeto "Resumo da fatura" vindo da IA. Pagamentos/créditos e
+// compras viram sempre POSITIVOS (são totalizadores de magnitude). Retorna null
+// se nenhum campo veio preenchido (fatura sem bloco de resumo).
+function parseSummary(raw: unknown): InvoiceSummary | null {
+  if (!raw || typeof raw !== "object") return null;
+  const s = raw as Record<string, unknown>;
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && isFinite(v) ? v : null;
+  const previousBalance = num(s.previousBalance);
+  const paymentsCredits = num(s.paymentsCredits);
+  const purchasesDebits = num(s.purchasesDebits);
+  const totalToPay = num(s.totalToPay);
+  if (
+    previousBalance === null &&
+    paymentsCredits === null &&
+    purchasesDebits === null &&
+    totalToPay === null
+  ) {
+    return null;
+  }
+  return {
+    previousBalance,
+    paymentsCredits: paymentsCredits === null ? null : Math.abs(paymentsCredits),
+    purchasesDebits: purchasesDebits === null ? null : Math.abs(purchasesDebits),
+    totalToPay,
   };
 }
 
