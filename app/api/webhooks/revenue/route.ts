@@ -1,7 +1,45 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
-// Detect if payload is from a sales platform (Kiwify/Hotmart/Eduzz style)
+/**
+ * Webhook de receita (OnProfit / Kiwify / Hotmart-style + formato direto).
+ *
+ * Idempotente por `externalId` (= `order_<id>` da plataforma). O mesmo pedido
+ * pode chegar várias vezes com status diferentes ao longo da vida dele:
+ *
+ *   PENDING/WAITING → cria lançamento PENDING (a receber)
+ *   PAID/APPROVED   → cria RECEIVED, ou promove o PENDING existente
+ *   REFUNDED/CANCELLED/CHARGEBACK → marca o existente como CANCELLED
+ *                     (estorno); sem venda correspondente, NÃO cria receita
+ *
+ * Antes, qualquer status fora de PAID/APPROVED virava receita PENDING nova
+ * (reembolso/cancelado entravam como "a receber") e um 2º evento do mesmo
+ * pedido batia 409 sem atualizar nada.
+ */
+
+type FinStatus = "RECEIVED" | "CANCELLED" | "PENDING";
+
+// Valores que a OnProfit (e plataformas do mesmo formato) mandam em `status`.
+// Comparação é case-insensitive e ignora espaços/hífens.
+const RECEIVED_STATUSES = new Set([
+  "PAID", "APPROVED", "COMPLETED", "COMPLETE", "CONFIRMED", "AUTHORIZED", "RECEIVED",
+]);
+const CANCELLED_STATUSES = new Set([
+  "REFUNDED", "REFUND", "PARTIALLY_REFUNDED", "PARTIAL_REFUND",
+  "CHARGEBACK", "CHARGED_BACK", "CHARGEDBACK", "DISPUTE", "DISPUTED",
+  "CANCELLED", "CANCELED", "VOIDED",
+  "REFUSED", "DECLINED", "REJECTED", "FAILED", "EXPIRED",
+]);
+
+function normalizeStatus(raw: unknown): FinStatus {
+  const s = String(raw ?? "").trim().toUpperCase().replace(/[\s-]+/g, "_");
+  if (RECEIVED_STATUSES.has(s)) return "RECEIVED";
+  if (CANCELLED_STATUSES.has(s)) return "CANCELLED";
+  return "PENDING";
+}
+
+// Detect if payload is from a sales platform (Kiwify/Hotmart/Eduzz/OnProfit style)
 function isPlatformPayload(body: Record<string, unknown>) {
   return body.object === "order" && body.product && body.price !== undefined;
 }
@@ -21,8 +59,6 @@ function normalizePlatform(body: Record<string, unknown>) {
     ? String(body.purchase_date).slice(0, 10) // "2026-03-19 19:51:29" → "2026-03-19"
     : null;
 
-  const status = body.status === "PAID" || body.status === "APPROVED" ? "RECEIVED" : "PENDING";
-
   // Build notes with useful metadata
   const notes = [
     offerName ? `Oferta: ${offerName}` : null,
@@ -38,17 +74,60 @@ function normalizePlatform(body: Record<string, unknown>) {
     contactName: customerName,
     competenceDate: purchaseDate,
     dueDate: purchaseDate,
-    status,
+    status: body.status, // normalizado mais abaixo
     // Só deriva externalId quando há um id real do pedido. Sem isso, payloads
     // sem `id` viravam todos "order_undefined" e colavam vendas distintas numa
-    // só (a 2ª batia 409 e sumia). Com null, os guards `if (externalId)` abaixo
-    // pulam a dedupe e cada venda é gravada — perder receita é pior que não
-    // deduplicar um retry raro (idempotência por id real segue funcionando).
+    // só. Com null, cada venda é gravada sem dedupe — perder receita é pior
+    // que não deduplicar um retry raro.
     externalId: (body.id != null && String(body.id).trim() !== "") ? `order_${body.id}` : null,
     notes: notes || null,
     categoryName: null as string | null,
     departmentName: null as string | null,
   };
+}
+
+function todayBR() {
+  return new Date().toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+}
+
+function appendNote(existing: string | null, extra: string) {
+  return existing ? `${existing} | ${extra}` : extra;
+}
+
+/**
+ * Aplica o novo status em cima de um lançamento já existente do mesmo pedido.
+ * Nunca rebaixa RECEIVED → PENDING (retry atrasado de um evento antigo).
+ */
+async function applyTransition(
+  existing: { id: string; status: string; notes: string | null },
+  fin: FinStatus,
+  rawStatus: unknown,
+) {
+  if (fin === "CANCELLED" && existing.status !== "CANCELLED") {
+    await prisma.transaction.update({
+      where: { id: existing.id },
+      data: {
+        status: "CANCELLED",
+        paymentDate: null,
+        notes: appendNote(existing.notes, `Estornado via webhook (${String(rawStatus ?? "").toUpperCase() || "CANCELLED"}) em ${todayBR()}`),
+      },
+    });
+    return "cancelled" as const;
+  }
+
+  if (fin === "RECEIVED" && existing.status !== "RECEIVED" && existing.status !== "PAID") {
+    await prisma.transaction.update({
+      where: { id: existing.id },
+      data: {
+        status: "RECEIVED",
+        paymentDate: new Date(),
+        notes: appendNote(existing.notes, `Confirmado via webhook (${String(rawStatus ?? "").toUpperCase() || "PAID"}) em ${todayBR()}`),
+      },
+    });
+    return "received" as const;
+  }
+
+  return "duplicate" as const;
 }
 
 export async function POST(request: NextRequest) {
@@ -74,21 +153,37 @@ export async function POST(request: NextRequest) {
       dueDate,
       status,
       notes,
-      externalId,
     } = data;
+    const externalId: string | null =
+      data.externalId != null && String(data.externalId).trim() !== "" ? String(data.externalId) : null;
+
+    const fin = normalizeStatus(status);
+
+    // 1) Pedido já conhecido → transição de status (idempotente)
+    if (externalId) {
+      const existing = await prisma.transaction.findFirst({
+        where: { companyId, OR: [{ externalId }, { tags: { has: `ext:${externalId}` } }] },
+        select: { id: true, status: true, notes: true },
+      });
+      if (existing) {
+        const action = await applyTransition(existing, fin, status);
+        return NextResponse.json({ ok: true, action, transactionId: existing.id }, { status: 200 });
+      }
+    }
+
+    // 2) Estorno/cancelamento de pedido que não temos → não vira receita
+    if (fin === "CANCELLED") {
+      console.warn("Webhook revenue: estorno/cancelamento sem venda correspondente", {
+        externalId, status, description, amount,
+      });
+      return NextResponse.json(
+        { ok: true, action: "ignored", reason: "estorno/cancelamento sem venda correspondente" },
+        { status: 200 },
+      );
+    }
 
     if (!description || !amount || Number(amount) <= 0) {
       return NextResponse.json({ error: "description e amount (> 0) são obrigatórios" }, { status: 400 });
-    }
-
-    // Duplicate check via externalId
-    if (externalId) {
-      const existing = await prisma.transaction.findFirst({
-        where: { companyId, tags: { has: `ext:${externalId}` } },
-      });
-      if (existing) {
-        return NextResponse.json({ error: "Duplicado", transactionId: existing.id }, { status: 409 });
-      }
     }
 
     // Resolve category by name
@@ -126,29 +221,46 @@ export async function POST(request: NextRequest) {
     const tags: string[] = [];
     if (externalId) tags.push(`ext:${externalId}`);
 
-    const txStatus = status === "RECEIVED" ? "RECEIVED" : "PENDING";
+    const txStatus = fin === "RECEIVED" ? "RECEIVED" : "PENDING";
 
-    const transaction = await prisma.transaction.create({
-      data: {
-        companyId,
-        description: String(description),
-        amount: Number(amount),
-        type: "INCOME",
-        status: txStatus,
-        isPredicted: false,
-        isRecurring: false,
-        categoryId,
-        departmentId,
-        contactId,
-        competenceDate: competenceDate ? new Date(String(competenceDate).slice(0, 10) + "T12:00:00") : new Date(),
-        dueDate: dueDate ? new Date(String(dueDate).slice(0, 10) + "T12:00:00") : null,
-        paymentDate: txStatus === "RECEIVED" ? new Date() : null,
-        tags,
-        notes: notes ? String(notes) : null,
-      },
-    });
+    // 3) Cria. O índice único (companyId, externalId) é quem garante que dois
+    //    webhooks do mesmo pedido em paralelo não viram dois lançamentos: o
+    //    segundo cai em P2002 e é tratado como transição em cima do primeiro.
+    try {
+      const transaction = await prisma.transaction.create({
+        data: {
+          companyId,
+          description: String(description),
+          amount: Number(amount),
+          type: "INCOME",
+          status: txStatus,
+          isPredicted: false,
+          isRecurring: false,
+          categoryId,
+          departmentId,
+          contactId,
+          competenceDate: competenceDate ? new Date(String(competenceDate).slice(0, 10) + "T12:00:00") : new Date(),
+          dueDate: dueDate ? new Date(String(dueDate).slice(0, 10) + "T12:00:00") : null,
+          paymentDate: txStatus === "RECEIVED" ? new Date() : null,
+          externalId,
+          tags,
+          notes: notes ? String(notes) : null,
+        },
+      });
+      return NextResponse.json({ ok: true, action: "created", transactionId: transaction.id }, { status: 201 });
+    } catch (err) {
+      const isUniqueViolation =
+        err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002";
+      if (!isUniqueViolation || !externalId) throw err;
 
-    return NextResponse.json({ ok: true, transactionId: transaction.id }, { status: 201 });
+      const existing = await prisma.transaction.findFirst({
+        where: { companyId, externalId },
+        select: { id: true, status: true, notes: true },
+      });
+      if (!existing) throw err;
+      const action = await applyTransition(existing, fin, status);
+      return NextResponse.json({ ok: true, action, transactionId: existing.id }, { status: 200 });
+    }
   } catch (error) {
     console.error("Webhook revenue error:", error);
     return NextResponse.json({ error: "Erro interno", detail: String(error) }, { status: 500 });

@@ -254,6 +254,11 @@ model Transaction {
   employeeId            String?
   eventItemId           String?
 
+  // Id do pedido na plataforma de vendas (webhook). Único por empresa: é o
+  // que garante idempotência de verdade — a checagem findFirst+create deixava
+  // passar webhooks duplicados disparados em paralelo (order_1366755, 22ms).
+  externalId String?
+
   notes String?
   tags  String[]
 
@@ -284,6 +289,7 @@ model Transaction {
   @@index([companyId, contactId])
   @@index([companyId, creditCardId])
   @@index([companyId, installmentGroupId])
+  @@unique([companyId, externalId])
   @@map("transactions")
 }
 
