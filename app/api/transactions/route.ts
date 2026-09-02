@@ -9,6 +9,7 @@ import {
   withDueWindow,
   withPaymentWindow,
 } from "@/lib/transaction-filters";
+import { isPersonNameSort, orderIdsByPersonName } from "@/lib/transaction-order";
 import { z } from "zod";
 
 const transactionSchema = z.object({
@@ -113,8 +114,11 @@ export const GET = withAuth(async ({ companyId, req }) => {
 
   const pendingWhere = dueWindow({ ...baseWhere, type: "EXPENSE" as const, status: { in: ["PENDING", "OVERDUE"] as ("PENDING" | "OVERDUE")[] } });
 
-  // Sort: aceita sortBy=employee|description|category|department|dueDate|paymentDate|status|amount|competenceDate
+  // Sort: aceita sortBy=name|description|category|department|dueDate|paymentDate|status|amount|competenceDate
   // sortOrder=asc|desc.
+  //
+  // `name` é a coluna "Nome" (colaborador OU cliente) e não passa por aqui —
+  // ordenar por COALESCE das duas relações exige SQL (ver lib/transaction-order.ts).
   //
   // `nulls: "last"` em scalar fields mantém os null no fim em qualquer sentido
   // (senão o user clica "Vencimento" e vê todas as linhas sem data no topo).
@@ -131,7 +135,6 @@ export const GET = withAuth(async ({ companyId, req }) => {
   const orderBy: any = (() => {
     const nullsLast = { sort: sortOrder, nulls: "last" as const };
     switch (sortBy) {
-      case "employee":     return { employee:   { name: sortOrder } };
       case "category":     return { category:   { name: sortOrder } };
       case "department":   return { department: { name: sortOrder } };
       case "description":  return { description: sortOrder };
@@ -165,9 +168,8 @@ export const GET = withAuth(async ({ companyId, req }) => {
     pendingByDeptRaw,
     expenseByAccountRaw,
   ] = await Promise.all([
-    prisma.transaction.findMany({
-      where,
-      include: {
+    (async () => {
+      const include = {
         category: { select: { id: true, name: true, color: true } },
         department: { select: { id: true, name: true, color: true } },
         contact: { select: { id: true, name: true } },
@@ -175,11 +177,35 @@ export const GET = withAuth(async ({ companyId, req }) => {
         creditCard: { select: { id: true, name: true } },
         employee: { select: { id: true, name: true } },
         attachments: { select: { id: true, name: true, url: true } },
-      },
-      orderBy,
-      skip: (page - 1) * limit,
-      take: limit,
-    }),
+      };
+
+      if (!isPersonNameSort(sortBy)) {
+        return prisma.transaction.findMany({
+          where,
+          include,
+          orderBy,
+          skip: (page - 1) * limit,
+          take: limit,
+        });
+      }
+
+      // Coluna "Nome": o Prisma filtra, o Postgres ordena pelo COALESCE de
+      // colaborador/cliente e devolve só os ids da página; o findMany final
+      // hidrata essas linhas e a ordem do SQL é reaplicada em memória (um
+      // `id IN (...)` não preserva ordem).
+      const matching = await prisma.transaction.findMany({ where, select: { id: true } });
+      const pageIds = await orderIdsByPersonName(
+        matching.map((t) => t.id),
+        sortOrder,
+        (page - 1) * limit,
+        limit
+      );
+      if (pageIds.length === 0) return [];
+
+      const rows = await prisma.transaction.findMany({ where: { id: { in: pageIds } }, include });
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      return pageIds.map((id) => byId.get(id)).filter(Boolean) as typeof rows;
+    })(),
     prisma.transaction.count({ where }),
     prisma.transaction.aggregate({ where: pendingWhere, _sum: { amount: true } }),
     prisma.transaction.aggregate({ where: withPaymentWindow({ ...baseWhere, type: "EXPENSE" as const, status: "PAID" as const }, windows), _sum: { amount: true } }),
