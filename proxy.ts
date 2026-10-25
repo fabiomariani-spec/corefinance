@@ -32,7 +32,8 @@ export { proxy };
 export default proxy;
 
 export const config = {
+  // /mcp e /api/v1 autenticam por token (cf_mcp_…), não por cookie.
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|mcp|api/v1|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
