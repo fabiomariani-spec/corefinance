@@ -133,6 +133,13 @@ const NOW = new Date();
 const DEFAULT_FROM = toDateStr(new Date(NOW.getFullYear(), NOW.getMonth(), 1));
 const DEFAULT_TO   = toDateStr(new Date(NOW.getFullYear(), NOW.getMonth() + 1, 0));
 
+// Nome exibido na coluna "Nome": colaborador (despesas de pessoal) ou cliente
+// (vendas que chegam pelo webhook da OnProfit). São campos distintos no banco,
+// mas nunca convivem na mesma linha — o financeiro lê os dois como "nome".
+function personName(tx: Transaction): string {
+  return tx.employee?.name ?? tx.contact?.name ?? "";
+}
+
 // Cabeçalho clicável de tabela com indicador de ordenação. Clica → alterna
 // asc/desc. Quando ativo, mostra seta indigo + label indigo. Inativo: zinc-500
 // + seta discreta sinalizando "ordenável".
@@ -953,7 +960,7 @@ export default function TransactionsPage() {
                     (t: Transaction & { amount: string | number }) => ({ ...t, amount: Number(t.amount) })
                   );
                   const headers = [
-                    "Colaborador",
+                    "Nome",
                     "Descrição",
                     "Categoria",
                     "Departamento",
@@ -965,7 +972,7 @@ export default function TransactionsPage() {
                     "Valor",
                   ];
                   const rows = all.map((tx) => [
-                    tx.employee?.name ?? "",
+                    personName(tx),
                     tx.description,
                     tx.category?.name ?? "",
                     tx.department?.name ?? "",
@@ -1180,7 +1187,7 @@ export default function TransactionsPage() {
                       title="Selecionar todos desta página"
                     />
                   </th>
-                  <SortHeader id="employee"      sortBy={sortBy} sortOrder={sortOrder} onClick={handleSort}>Colaborador</SortHeader>
+                  <SortHeader id="name"          sortBy={sortBy} sortOrder={sortOrder} onClick={handleSort}>Nome</SortHeader>
                   <SortHeader id="description"   sortBy={sortBy} sortOrder={sortOrder} onClick={handleSort}>Descrição</SortHeader>
                   <SortHeader id="category"      sortBy={sortBy} sortOrder={sortOrder} onClick={handleSort}>Categoria</SortHeader>
                   <SortHeader id="department"    sortBy={sortBy} sortOrder={sortOrder} onClick={handleSort}>Departamento</SortHeader>
@@ -1324,11 +1331,16 @@ export default function TransactionsPage() {
                           className="w-4 h-4 rounded border-zinc-600 bg-zinc-800 text-indigo-600 cursor-pointer accent-indigo-600"
                         />
                       </td>
-                      {/* Colaborador (antes da descrição — pedido do financeiro pra leitura) */}
+                      {/* Nome (antes da descrição — pedido do financeiro pra leitura).
+                          Colaborador nas despesas de pessoal, cliente nas vendas que
+                          entram por webhook: nunca os dois na mesma linha. */}
                       <td className="px-4 py-3">
-                        {tx.employee ? (
-                          <span className="text-zinc-200 text-sm font-medium truncate max-w-[160px] inline-block">
-                            {tx.employee.name}
+                        {personName(tx) ? (
+                          <span
+                            className="text-zinc-200 text-sm font-medium truncate max-w-[160px] inline-block"
+                            title={`${tx.employee ? "Colaborador" : "Cliente"}: ${personName(tx)}`}
+                          >
+                            {personName(tx)}
                           </span>
                         ) : (
                           <span className="text-zinc-600 text-xs">—</span>

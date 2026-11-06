@@ -1,8 +1,16 @@
 import { createClient } from "@/lib/supabase/server";
 import { prisma } from "@/lib/prisma";
 import type { UserRole } from "@prisma/client";
+import type { User } from "@supabase/supabase-js";
+import { identidadeMcp } from "@/lib/mcp/contexto";
+
+// Chamadas pelo MCP/API v1 (token cf_mcp_…) não têm cookie: a pessoa vem do
+// token, já validado em lib/mcp/sessao.ts. Ver lib/mcp/contexto.ts.
 
 export async function getCompanyId(): Promise<string> {
+  const mcp = identidadeMcp();
+  if (mcp) return mcp.companyId;
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
 
@@ -27,6 +35,9 @@ export async function getCompanyContext(): Promise<{
   role: UserRole;
   userId: string;
 }> {
+  const mcp = identidadeMcp();
+  if (mcp) return { companyId: mcp.companyId, role: mcp.role, userId: mcp.userId };
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error("Não autenticado");
@@ -40,7 +51,10 @@ export async function getCompanyContext(): Promise<{
   return { companyId: companyUser.companyId, role: companyUser.role, userId: user.id };
 }
 
-export async function requireAuth() {
+export async function requireAuth(): Promise<User> {
+  const mcp = identidadeMcp();
+  if (mcp) return { id: mcp.userId, email: mcp.email } as User;
+
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error("Não autenticado");
