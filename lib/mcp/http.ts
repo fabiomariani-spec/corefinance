@@ -16,7 +16,7 @@ export function json(body: unknown, status = 200, extra: Record<string, string> 
 }
 
 export function quemDe(id: McpIdentidade): Quem {
-  return { role: id.role, podeEscrever: id.podeEscrever };
+  return { role: id.role, podeEscrever: id.podeEscrever, podeSql: id.podeSql };
 }
 
 /**

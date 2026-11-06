@@ -10,6 +10,7 @@ type LinhaToken = {
   id: string;
   name: string;
   can_write: boolean;
+  can_sql: boolean;
   escrita_geral: boolean | null;
   membro_id: string;
   user_id: string;
@@ -36,7 +37,7 @@ export async function resolverToken(bruto: string, canal: "mcp" | "api"): Promis
          AND t.active
          AND cu.id = t.acting_user_id
          AND cu."isActive"
-      RETURNING t.id::text AS id, t.name, t.can_write,
+      RETURNING t.id::text AS id, t.name, t.can_write, t.can_sql,
                 (SELECT (value->>'escrita')::boolean FROM system_config WHERE key = 'mcp_remoto') AS escrita_geral,
                 cu.id AS membro_id, cu."userId" AS user_id, cu."companyId" AS company_id,
                 cu.role::text AS role, cu.name AS nome, cu.email AS email`;
@@ -54,6 +55,7 @@ export async function resolverToken(bruto: string, canal: "mcp" | "api"): Promis
     tokenId: t.id,
     tokenNome: t.name,
     podeEscrever: t.can_write && t.escrita_geral === true,
+    podeSql: t.can_sql === true,
     canal,
     membroId: t.membro_id,
     userId: t.user_id,

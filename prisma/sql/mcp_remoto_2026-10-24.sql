@@ -8,6 +8,7 @@
 -- McpCall e SystemConfig no schema.prisma espelham estas tabelas.
 --
 -- Criar token:   select mcp_create_token('core-agents', 'email@da.pessoa', 'Core Agents (IA)', true);
+--                (5º arg: company_id, se a pessoa está em mais de uma empresa; 6º: can_sql)
 --                (e-mail ou id do company_users; o retorno é o token, guarde na hora)
 -- Revogar:       update mcp_tokens set active = false where name = 'core-agents';
 -- Desligar a escrita de todos:
@@ -31,6 +32,8 @@ CREATE TABLE IF NOT EXISTS public.mcp_tokens (
   CONSTRAINT mcp_tokens_acting_user_id_fkey FOREIGN KEY (acting_user_id)
     REFERENCES public.company_users(id) ON DELETE RESTRICT ON UPDATE CASCADE
 );
+-- can_sql libera a ferramenta sql_leitura (SELECT cru, enxerga TODAS as empresas).
+ALTER TABLE public.mcp_tokens ADD COLUMN IF NOT EXISTS can_sql boolean NOT NULL DEFAULT false;
 CREATE UNIQUE INDEX IF NOT EXISTS mcp_tokens_name_key ON public.mcp_tokens (name);
 CREATE UNIQUE INDEX IF NOT EXISTS mcp_tokens_key_hash_key ON public.mcp_tokens (key_hash);
 
@@ -76,6 +79,17 @@ BEGIN
   END IF;
 END $$;
 
+-- gabriel_dev (dev com DML no public por default privileges) NÃO acessa as
+-- tabelas do MCP: com escrita em mcp_tokens daria pra criar token agindo como
+-- outra pessoa. Por isso também não há política gabriel_dev_all nelas.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gabriel_dev') THEN
+    REVOKE ALL ON public.mcp_tokens, public.mcp_calls, public.system_config FROM gabriel_dev;
+    REVOKE ALL ON SEQUENCE public.mcp_calls_id_seq FROM gabriel_dev;
+  END IF;
+END $$;
+
 -- Cria o token de uma pessoa da equipe e devolve o texto puro (uma vez só).
 -- p_pessoa = e-mail ou id de um company_users ativo. Se o e-mail aparece em
 -- mais de um vínculo (outra empresa ou vínculo duplicado), use o id.
@@ -84,7 +98,8 @@ CREATE OR REPLACE FUNCTION public.mcp_create_token(
   p_pessoa text,
   p_note text DEFAULT NULL,
   p_can_write boolean DEFAULT true,
-  p_company_id text DEFAULT NULL
+  p_company_id text DEFAULT NULL,
+  p_can_sql boolean DEFAULT false
 ) RETURNS text
 LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public', 'extensions'
 AS $$
@@ -99,14 +114,14 @@ BEGIN
      AND (p_company_id IS NULL OR "companyId" = p_company_id);
   IF v_qtd = 0 THEN RAISE EXCEPTION 'pessoa da equipe não encontrada (ativa): %', p_pessoa; END IF;
   IF v_qtd > 1 THEN RAISE EXCEPTION '% tem % vínculos ativos: use o id do company_users', p_pessoa, v_qtd; END IF;
-  INSERT INTO public.mcp_tokens (name, key_prefix, key_hash, acting_user_id, can_write, note)
-  VALUES (p_name, 'cf_mcp_', encode(extensions.digest(v_key, 'sha256'), 'hex'), v_membro, p_can_write, p_note);
+  INSERT INTO public.mcp_tokens (name, key_prefix, key_hash, acting_user_id, can_write, can_sql, note)
+  VALUES (p_name, 'cf_mcp_', encode(extensions.digest(v_key, 'sha256'), 'hex'), v_membro, p_can_write, p_can_sql, p_note);
   RETURN v_key;
 END $$;
-REVOKE ALL ON FUNCTION public.mcp_create_token(text, text, text, boolean, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.mcp_create_token(text, text, text, boolean, text, boolean) FROM PUBLIC;
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
-    REVOKE ALL ON FUNCTION public.mcp_create_token(text, text, text, boolean, text) FROM anon, authenticated;
+    REVOKE ALL ON FUNCTION public.mcp_create_token(text, text, text, boolean, text, boolean) FROM anon, authenticated;
   END IF;
 END $$;

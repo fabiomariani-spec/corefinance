@@ -18,6 +18,8 @@ export interface McpIdentidade {
   tokenNome: string;
   /** can_write do token E a chave geral (system_config.mcp_remoto.escrita). */
   podeEscrever: boolean;
+  /** mcp_tokens.can_sql: libera sql_leitura (sem recorte por empresa). */
+  podeSql: boolean;
   canal: "mcp" | "api";
   /** company_users.id */
   membroId: string;

@@ -11,7 +11,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-export const VERSAO = "1.0.0";
+export const VERSAO = "2.0.0";
 export const NOME_SERVIDOR = "core-finance";
 export const PREFIXO_TOKEN = "cf_mcp_";
 export const SAIDA_MAX = 60_000;
@@ -30,6 +30,8 @@ export type Area = "geral" | "eventos" | "apoio";
 export interface Quem {
   role: Papel;
   podeEscrever: boolean;
+  /** mcp_tokens.can_sql: libera sql_leitura (enxerga o banco inteiro, todas as empresas). */
+  podeSql?: boolean;
 }
 
 export interface Acao {
@@ -38,6 +40,12 @@ export interface Acao {
   schema: z.ZodObject;
   escrita: boolean;
   area: Area;
+  /** Apaga ou desativa dados: anotação destructiveHint e `confirmar: true` no schema. */
+  apaga: boolean;
+  /** Só o papel ADMIN (ex.: acesso genérico ao banco, excluir empresa). */
+  soAdmin: boolean;
+  /** Precisa de mcp_tokens.can_sql (SQL cru, sem recorte por empresa). */
+  sql: boolean;
   executar: (args: never) => Promise<unknown>;
 }
 
@@ -48,10 +56,21 @@ export function acao<S extends z.ZodObject>(def: {
   schema: S;
   escrita: boolean;
   area?: Area;
+  apaga?: boolean;
+  soAdmin?: boolean;
+  sql?: boolean;
   executar: (args: z.output<S>) => Promise<unknown>;
 }): Acao {
-  return { area: "geral", ...def } as Acao;
+  return { area: "geral", apaga: false, soAdmin: false, sql: false, ...def } as Acao;
 }
+
+/**
+ * Trava das ações que apagam: o chamador tem que mandar `confirmar: true`.
+ * Evita que uma IA apague por engano ao "testar" a ferramenta.
+ */
+export const CONFIRMAR = z
+  .literal(true)
+  .describe("Obrigatório: true. Esta ação apaga/desativa dados; confirme com a pessoa antes.");
 
 /** O app (ou a regra do MCP) recusou a ação. `status` é o HTTP da /api/v1. */
 export class Recusa extends Error {
@@ -90,6 +109,12 @@ export function acoesVisiveis(acoes: Acao[], quem: Quem): Acao[] {
 }
 
 function barrada(a: Acao, quem: Quem): string | null {
+  if (a.sql && !quem.podeSql) {
+    return "Este token não tem acesso a SQL (mcp_tokens.can_sql).";
+  }
+  if (a.soAdmin && quem.role !== "ADMIN") {
+    return "Só administradores (ADMIN) usam esta ação.";
+  }
   if (quem.role === "EVENTS_ONLY" && a.area === "geral") {
     return "Seu papel (Eventos) só acessa eventos, como na tela.";
   }
@@ -141,8 +166,9 @@ export async function rodarAcao(
       try {
         r = { ok: true, dados: await a.executar(v.data as never) };
       } catch (e) {
-        if (e instanceof Recusa) {
-          r = { ok: false, erro: e.message, status: e.status, detalhes: e.detalhes };
+        if (e instanceof Recusa || (e as { recusa?: unknown })?.recusa === true) {
+          const rec = e as Recusa;
+          r = { ok: false, erro: rec.message, status: rec.status ?? 422, detalhes: rec.detalhes };
         } else {
           console.error(`[mcp] ${a.nome}:`, e);
           r = { ok: false, erro: "Erro interno do Core Finance.", status: 500 };
@@ -225,7 +251,7 @@ export async function atenderMensagem(msg: Msg, ctx: CtxRpc): Promise<object | n
           name: a.nome,
           description: a.descricao,
           inputSchema: jsonSchemaDe(a.schema),
-          annotations: { readOnlyHint: !a.escrita, destructiveHint: false, openWorldHint: false },
+          annotations: { readOnlyHint: !a.escrita, destructiveHint: a.apaga, openWorldHint: false },
         })),
       });
     case "tools/call": {
@@ -316,6 +342,7 @@ export async function atenderRest(p: {
           nome: a.nome,
           descricao: a.descricao,
           escrita: a.escrita,
+          apaga: a.apaga,
           metodo: a.escrita ? "POST" : "GET ou POST",
           schema: jsonSchemaDe(a.schema),
         })),

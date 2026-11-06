@@ -573,6 +573,7 @@ model McpToken {
   keyHash      String    @unique @map("key_hash")
   actingUserId String    @map("acting_user_id")
   canWrite     Boolean   @default(true) @map("can_write")
+  canSql       Boolean   @default(false) @map("can_sql")
   active       Boolean   @default(true)
   note         String?
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)

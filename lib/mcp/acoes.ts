@@ -6,14 +6,18 @@
  * recorrência, conciliação de fatura, "só ADMIN convida"…). Os argumentos usam
  * os nomes de campo do próprio app (description, amount, dueDate…).
  *
- * Fora de propósito: apagar (lançamento, conta, cartão, contato, colaborador,
- * evento, fatura, membro, empresa). Desativar/arquivar o que a tela deixa
- * reativar entra (categoria, contato). Tabela completa em docs/mcp.md.
+ * Cobre 100% das ações da tela, inclusive apagar (com `confirmar: true`
+ * obrigatório e anotação destructiveHint), e ainda o que a tela não faz:
+ * lotes, CSV, relatórios do WhatsApp, assistente, auditoria, acesso genérico ao
+ * banco recortado pela empresa (lib/mcp/banco.ts) e SQL só leitura (can_sql).
+ * Tabela completa em docs/mcp.md.
  */
 import { prisma } from "@/lib/prisma";
 import { z } from "zod";
 import { identidadeMcp } from "@/lib/mcp/contexto";
-import { acao, Recusa, type Acao } from "@/lib/mcp/nucleo";
+import { acao, CONFIRMAR, Recusa, type Acao } from "@/lib/mcp/nucleo";
+import * as banco from "@/lib/mcp/banco";
+import { buildDailyReport, buildWeeklyReport, processFinancialMessage } from "@/lib/ai-assistant";
 import { chamar } from "@/lib/mcp/rotas";
 
 import * as rDashboard from "@/app/api/dashboard/route";
@@ -51,6 +55,7 @@ import * as rTeamMember from "@/app/api/team/[memberId]/route";
 import * as rInvite from "@/app/api/team/invite/route";
 import * as rInviteResend from "@/app/api/team/invite/resend/route";
 import * as rSettings from "@/app/api/settings/route";
+import * as rAiInsight from "@/app/api/ai-insight/route";
 
 // ─── Tipos comuns ───────────────────────────────────────────────────────────
 
@@ -773,7 +778,7 @@ export const ACOES: Acao[] = [
   acao({
     nome: "confirmar_fatura",
     descricao:
-      "Passo 3: grava a fatura e cria os lançamentos dos itens incluídos (mesma conciliação da tela: a soma tem que bater com o total ou com as compras do período, salvo confirmAnyway). Só fatura nova: reimportar (que substitui lançamentos) fica na tela.",
+      "Passo 3: grava a fatura e cria os lançamentos dos itens incluídos (mesma conciliação da tela: a soma tem que bater com o total ou com as compras do período, salvo confirmAnyway). Se já existe fatura do cartão no mês, é reimportação: mande substituir=true (apaga os lançamentos NÃO pagos da importação anterior e recria, como a tela).",
     schema: z.object({
       creditCardId: ID,
       referenceMonth: MES,
@@ -803,9 +808,10 @@ export const ACOES: Acao[] = [
       summaryOnly: z.boolean().optional().describe("Importa só o total como um lançamento"),
       summaryCategoryId: opc(ID),
       confirmAnyway: z.boolean().optional().describe("Grava mesmo com a conciliação não batendo"),
+      substituir: z.boolean().optional().describe("Reimportação: true substitui a fatura já existente do mês"),
     }),
     escrita: true,
-    executar: async (a) => {
+    executar: async ({ substituir, ...a }) => {
       const companyId = eu().companyId;
       await daEmpresa({ creditCardId: a.creditCardId, categoryId: a.summaryCategoryId });
       const referenceMonth = parseInt(a.referenceMonth.replace("-", ""));
@@ -813,9 +819,9 @@ export const ACOES: Acao[] = [
         where: { companyId, creditCardId: a.creditCardId, referenceMonth },
         select: { id: true },
       });
-      if (jaExiste) {
+      if (jaExiste && substituir !== true) {
         throw new Recusa(
-          `Já existe fatura deste cartão em ${a.referenceMonth} (${jaExiste.id}). Reimportar apaga os lançamentos não pagos dela: faça pela tela de Faturas.`
+          `Já existe fatura deste cartão em ${a.referenceMonth} (${jaExiste.id}). Reimportar apaga os lançamentos não pagos dela e recria: confirme com a pessoa e mande substituir=true.`
         );
       }
       return chamar(rInvoiceConfirm.POST, { metodo: "POST", caminho: "/api/invoices/confirm", corpo: limpo(a) });
@@ -894,6 +900,547 @@ export const ACOES: Acao[] = [
     escrita: true,
     executar: (a) => chamar(rSettings.PATCH, { metodo: "PATCH", caminho: "/api/settings", corpo: limpo(a) }),
   }),
+
+  // ════════════════════════════════════════════════════════════════════════
+  // Resto da tela: apagar/desativar (sempre com confirmar: true)
+  // ════════════════════════════════════════════════════════════════════════
+  acao({
+    nome: "excluir_lancamento",
+    descricao: "Exclui um lançamento (como o botão Excluir da tela). Irreversível.",
+    schema: z.object({ id: ID, confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    executar: async ({ id }) => {
+      const tx = await prisma.transaction.findFirst({
+        where: { id, companyId: eu().companyId },
+        select: { id: true, description: true, amount: true },
+      });
+      await existe("Lançamento", tx);
+      await chamar(rTxId.DELETE, { metodo: "DELETE", caminho: `/api/transactions/${id}`, params: { id } });
+      return { ok: true, excluido: tx };
+    },
+  }),
+  acao({
+    nome: "excluir_lancamentos",
+    descricao: "Exclui vários lançamentos de uma vez (seleção múltipla da tela). Irreversível.",
+    schema: z.object({ ids: z.array(ID).min(1).max(1000), confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    executar: ({ ids }) => chamar(rTx.DELETE, { metodo: "DELETE", caminho: "/api/transactions", corpo: { ids } }),
+  }),
+  acao({
+    nome: "desativar_conta",
+    descricao: "Exclui (desativa) uma conta bancária, como a tela: some das listas e o histórico fica.",
+    schema: z.object({ id: ID, confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    executar: async ({ id }) => {
+      await existe("Conta", await prisma.account.findFirst({ where: { id, companyId: eu().companyId }, select: { id: true } }));
+      return chamar(rAccountId.DELETE, { metodo: "DELETE", caminho: `/api/accounts/${id}`, params: { id } });
+    },
+  }),
+  acao({
+    nome: "desativar_cartao",
+    descricao: "Exclui (desativa) um cartão de crédito, como a tela. Faturas e lançamentos ficam.",
+    schema: z.object({ id: ID, confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    executar: async ({ id }) => {
+      await existe("Cartão", await prisma.creditCard.findFirst({ where: { id, companyId: eu().companyId }, select: { id: true } }));
+      return chamar(rCardId.DELETE, { metodo: "DELETE", caminho: `/api/credit-cards/${id}`, params: { id } });
+    },
+  }),
+  acao({
+    nome: "desativar_categoria",
+    descricao: "Desativa a categoria e as subcategorias dela (botão excluir da tela). Reative com editar_categoria isActive=true.",
+    schema: z.object({ id: ID, confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    executar: ({ id }) => chamar(rCategoryId.DELETE, { metodo: "DELETE", caminho: `/api/categories/${id}`, params: { id } }),
+  }),
+  acao({
+    nome: "desativar_departamento",
+    descricao: "Exclui (desativa) um departamento, como a tela.",
+    schema: z.object({ id: ID, confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    executar: ({ id }) => chamar(rDepartmentId.DELETE, { metodo: "DELETE", caminho: `/api/departments/${id}`, params: { id } }),
+  }),
+  acao({
+    nome: "excluir_contato",
+    descricao:
+      "Exclui um fornecedor/cliente. Se tiver lançamentos ou itens de evento vinculados, a tela só deixa arquivar: mande arquivar=true.",
+    schema: z.object({ id: ID, arquivar: z.boolean().optional().describe("true = só arquiva (isActive=false)"), confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    executar: ({ id, arquivar }) =>
+      chamar(rContactId.DELETE, {
+        metodo: "DELETE",
+        caminho: `/api/contacts/${id}`,
+        params: { id },
+        query: arquivar ? { archive: "1" } : {},
+      }),
+  }),
+  acao({
+    nome: "excluir_colaborador",
+    descricao:
+      "Exclui o colaborador: cancela os salários futuros e desvincula os lançamentos passados (o histórico fica, sem o nome). Para só parar a folha, prefira mudar_status_colaborador.",
+    schema: z.object({ id: ID, confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    executar: ({ id }) => chamar(rEmployeeId.DELETE, { metodo: "DELETE", caminho: `/api/employees/${id}`, params: { id } }),
+  }),
+  acao({
+    nome: "zerar_remuneracao_variavel",
+    descricao: "Apaga a remuneração variável do colaborador no mês e o lançamento dela (zerar na tela).",
+    schema: z.object({ employeeId: ID, month: MES, confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    executar: async ({ employeeId, month }) => {
+      await daEmpresa({ employeeId });
+      return chamar(rVariable.POST, { metodo: "POST", caminho: "/api/employees/variable", corpo: { employeeId, month, amount: 0 } });
+    },
+  }),
+  acao({
+    nome: "excluir_evento",
+    descricao: "Exclui o evento e todos os itens dele. Lançamentos já integrados continuam em Lançamentos.",
+    schema: z.object({ id: ID, confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    area: "eventos",
+    executar: async ({ id }) => {
+      await existe("Evento", await prisma.event.findFirst({ where: { id, companyId: eu().companyId }, select: { id: true } }));
+      return chamar(rEventId.DELETE, { metodo: "DELETE", caminho: `/api/events/${id}`, params: { id } });
+    },
+  }),
+  acao({
+    nome: "excluir_item_evento",
+    descricao: "Exclui um item de custo do evento.",
+    schema: z.object({ eventId: ID, itemId: ID, confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    area: "eventos",
+    executar: async ({ eventId, itemId }) => {
+      await existe(
+        "Item do evento",
+        await prisma.eventItem.findFirst({ where: { id: itemId, eventId, companyId: eu().companyId }, select: { id: true } })
+      );
+      return chamar(rEventItemId.DELETE, {
+        metodo: "DELETE",
+        caminho: `/api/events/${eventId}/items/${itemId}`,
+        params: { id: eventId, itemId },
+      });
+    },
+  }),
+  acao({
+    nome: "excluir_fatura",
+    descricao:
+      "Exclui a fatura e os lançamentos importados dela. Se algum já foi pago, a tela bloqueia: forcar=true ignora (a pessoa tem que estar ciente).",
+    schema: z.object({ id: ID, forcar: z.boolean().optional(), confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    executar: ({ id, forcar }) =>
+      chamar(rInvoiceId.DELETE, {
+        metodo: "DELETE",
+        caminho: `/api/invoices/${id}`,
+        params: { id },
+        query: forcar ? { force: "true" } : {},
+      }),
+  }),
+  acao({
+    nome: "remover_membro",
+    descricao: "Só ADMIN. Tira o acesso de uma pessoa à empresa (userId de ver_equipe). Não remove a si mesmo.",
+    schema: z.object({ userId: ID, confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    executar: ({ userId }) => chamar(rTeam.DELETE, { metodo: "DELETE", caminho: "/api/team", corpo: { userId } }),
+  }),
+  acao({
+    nome: "criar_empresa",
+    descricao:
+      "Cria outra empresa (multiempresa da tela de Configurações) com categorias e departamentos padrão; você vira ADMIN dela. O token continua agindo na empresa atual.",
+    schema: z.object({
+      name: z.string().min(1),
+      document: z.string().optional().describe("CNPJ (validado)"),
+      currency: z.string().optional().describe("Padrão BRL"),
+      timezone: z.string().optional().describe("Padrão America/Sao_Paulo"),
+    }),
+    escrita: true,
+    executar: ({ currency, timezone, ...resto }) =>
+      chamar(rSettings.POST, {
+        metodo: "POST",
+        caminho: "/api/settings",
+        corpo: { ...limpo(resto), settings: limpo({ currency, timezone }) },
+      }),
+  }),
+  acao({
+    nome: "excluir_empresa",
+    descricao:
+      "Só ADMIN. APAGA a empresa deste token e TODOS os dados dela (lançamentos, contas, faturas, equipe...). Irreversível. nomeEmpresa tem que ser o nome exato (como a tela pede).",
+    schema: z.object({ nomeEmpresa: z.string().min(1), confirmar: CONFIRMAR }),
+    escrita: true,
+    apaga: true,
+    soAdmin: true,
+    executar: ({ nomeEmpresa }) =>
+      chamar(rSettings.DELETE, { metodo: "DELETE", caminho: "/api/settings", corpo: { confirmName: nomeEmpresa } }),
+  }),
+
+  // ── Painel: análise da IA ──
+  acao({
+    nome: "analise_ia_painel",
+    descricao:
+      "O botão 'Análise da IA' do painel: busca os números do período e gera o texto executivo (Claude). Custa uma chamada de IA.",
+    schema: z.object({
+      period: z.enum(["month", "quarter", "year"]).optional().describe("Padrão month"),
+      date: opc(DATA).describe("Data de referência (padrão hoje)"),
+    }),
+    escrita: false,
+    executar: async ({ period, date }) => {
+      const data = await chamar<Record<string, unknown>>(rDashboard.GET, {
+        caminho: "/api/dashboard",
+        query: limpo({ period, date }),
+      });
+      return chamar<string>(rAiInsight.POST, {
+        metodo: "POST",
+        caminho: "/api/ai-insight",
+        corpo: { data, period: period ?? "month" },
+      });
+    },
+  }),
+
+  // ════════════════════════════════════════════════════════════════════════
+  // Além da tela
+  // ════════════════════════════════════════════════════════════════════════
+  acao({
+    nome: "listar_minhas_empresas",
+    descricao: "Empresas em que a pessoa do token está, com o papel em cada uma (o token age só na atual).",
+    schema: z.object({}),
+    escrita: false,
+    area: "apoio",
+    executar: async () => {
+      const id = eu();
+      const vinculos = await prisma.companyUser.findMany({
+        where: { userId: id.userId, isActive: true },
+        select: { role: true, companyId: true, company: { select: { name: true, document: true } } },
+        orderBy: { createdAt: "asc" },
+      });
+      return vinculos.map((v) => ({
+        companyId: v.companyId,
+        nome: v.company.name,
+        cnpj: v.company.document,
+        papel: v.role,
+        atual: v.companyId === id.companyId,
+      }));
+    },
+  }),
+  acao({
+    nome: "baixar_lancamentos",
+    descricao:
+      "Dá baixa em vários lançamentos de uma vez: PAID (saída) / RECEIVED (entrada) com a mesma data (padrão hoje) e, se quiser, a mesma conta.",
+    schema: z.object({ ids: z.array(ID).min(1).max(300), paymentDate: DATA.optional(), accountId: ID.optional() }),
+    escrita: true,
+    executar: async ({ ids, paymentDate, accountId }) => {
+      await daEmpresa({ accountId });
+      const txs = await prisma.transaction.findMany({
+        where: { id: { in: ids }, companyId: eu().companyId },
+        select: { id: true, type: true },
+      });
+      const achados = new Map(txs.map((t) => [t.id, t.type]));
+      const ok: string[] = [];
+      const falhas: { id: string; erro: string }[] = [];
+      for (const id of ids) {
+        const tipo = achados.get(id);
+        if (!tipo) {
+          falhas.push({ id, erro: "não encontrado nesta empresa" });
+          continue;
+        }
+        try {
+          const corpo = limpo({ status: tipo === "INCOME" ? "RECEIVED" : "PAID", paymentDate: paymentDate ?? hoje(), accountId });
+          await chamar(rTxId.PUT, { metodo: "PUT", caminho: `/api/transactions/${id}`, params: { id }, corpo });
+          ok.push(id);
+        } catch (e) {
+          falhas.push({ id, erro: (e as Error).message });
+        }
+      }
+      return { baixados: ok.length, falhas };
+    },
+  }),
+  acao({
+    nome: "editar_lancamentos",
+    descricao:
+      "Aplica a mesma edição a vários lançamentos (ex.: trocar categoria/departamento/conta, mudar status, vencimento). Passa pela mesma rota de edição da tela, um por um.",
+    schema: z.object({
+      ids: z.array(ID).min(1).max(300),
+      campos: z
+        .object({
+          description: z.string().min(1).optional(),
+          amount: z.number().positive().optional(),
+          type: TIPO.optional(),
+          status: STATUS_TX.optional(),
+          isPredicted: z.boolean().optional(),
+          categoryId: opc(ID),
+          departmentId: opc(ID),
+          employeeId: opc(ID),
+          contactId: opc(ID),
+          accountId: opc(ID),
+          creditCardId: opc(ID),
+          competenceDate: DATA.optional(),
+          dueDate: opc(DATA),
+          paymentDate: opc(DATA),
+          paymentMethod: opc(METODO),
+          notes: opc(z.string()),
+          tags: z.array(z.string()).optional(),
+        })
+        .describe("Campos a aplicar em todos (null limpa)"),
+    }),
+    escrita: true,
+    executar: async ({ ids, campos }) => {
+      const corpo = limpo(campos);
+      if (Object.keys(corpo).length === 0) throw new Recusa("Nenhum campo para editar.", 400);
+      await daEmpresa(corpo);
+      const ok: string[] = [];
+      const falhas: { id: string; erro: string }[] = [];
+      for (const id of ids) {
+        try {
+          const r = await chamar<{ updated: number }>(rTxId.PUT, {
+            metodo: "PUT",
+            caminho: `/api/transactions/${id}`,
+            params: { id },
+            corpo,
+          });
+          if (r.updated) ok.push(id);
+          else falhas.push({ id, erro: "não encontrado nesta empresa" });
+        } catch (e) {
+          falhas.push({ id, erro: (e as Error).message });
+        }
+      }
+      return { editados: ok.length, falhas };
+    },
+  }),
+  acao({
+    nome: "exportar_lancamentos_csv",
+    descricao:
+      "Exporta lançamentos em CSV (separador ';', valor com vírgula, datas DD/MM/AAAA), com os mesmos filtros de listar_lancamentos. Paginado: use pagina para as próximas.",
+    schema: z.object({
+      pagina: z.number().int().min(1).optional(),
+      porPagina: z.number().int().min(1).max(400).optional().describe("Padrão 300 (cabe no limite de saída)"),
+      type: opc(TIPO),
+      status: z.array(STATUS_TX).optional(),
+      categoryId: opc(ID),
+      departmentId: opc(ID),
+      employeeId: opc(ID),
+      accountId: opc(ID),
+      month: opc(MES),
+      startDate: opc(DATA),
+      endDate: opc(DATA),
+      search: opc(z.string()),
+    }),
+    escrita: false,
+    executar: async ({ pagina, porPagina, ...filtros }) => {
+      type Linha = {
+        id: string;
+        description: string;
+        amount: string | number;
+        type: string;
+        status: string;
+        competenceDate: string;
+        dueDate: string | null;
+        paymentDate: string | null;
+        paymentMethod: string | null;
+        installmentNumber: number | null;
+        installmentTotal: number | null;
+        notes: string | null;
+        tags: string[];
+        category?: { name: string } | null;
+        department?: { name: string } | null;
+        contact?: { name: string } | null;
+        employee?: { name: string } | null;
+        account?: { name: string } | null;
+        creditCard?: { name: string } | null;
+      };
+      const r = await chamar<{ transactions: Linha[]; total: number; totalPages: number; page: number }>(rTx.GET, {
+        caminho: "/api/transactions",
+        query: { ...limpo(filtros), page: pagina ?? 1, limit: porPagina ?? 300, sortBy: "competenceDate", sortOrder: "asc" },
+      });
+      const br = (d: string | null) => (d ? new Date(d).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" }) : "");
+      const cel = (v: unknown) => {
+        const t = v === null || v === undefined ? "" : String(v);
+        return /[;"\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+      };
+      const cab = [
+        "Competência", "Vencimento", "Pagamento", "Descrição", "Tipo", "Status", "Valor", "Categoria", "Departamento",
+        "Contato", "Colaborador", "Conta", "Cartão", "Forma", "Parcela", "Tags", "Observações", "ID",
+      ];
+      const linhas = r.transactions.map((t) =>
+        [
+          br(t.competenceDate), br(t.dueDate), br(t.paymentDate), t.description,
+          t.type === "INCOME" ? "Receita" : "Despesa", t.status, Number(t.amount).toFixed(2).replace(".", ","),
+          t.category?.name, t.department?.name, t.contact?.name, t.employee?.name, t.account?.name, t.creditCard?.name,
+          t.paymentMethod, t.installmentNumber ? `${t.installmentNumber}/${t.installmentTotal ?? "∞"}` : "",
+          (t.tags ?? []).join(", "), t.notes, t.id,
+        ].map(cel).join(";")
+      );
+      return `# página ${r.page} de ${Math.max(r.totalPages, 1)} (${r.total} lançamentos no filtro)\n${[cab.join(";"), ...linhas].join("\n")}`;
+    },
+  }),
+  acao({
+    nome: "relatorio_diario",
+    descricao: "O relatório diário que o bot manda no WhatsApp às 7h (texto pronto: saldo, a pagar/receber do dia, atrasados).",
+    schema: z.object({}),
+    escrita: false,
+    executar: () => buildDailyReport(eu().companyId),
+  }),
+  acao({
+    nome: "relatorio_semanal",
+    descricao: "O relatório semanal que o bot manda no WhatsApp (texto pronto).",
+    schema: z.object({}),
+    escrita: false,
+    executar: () => buildWeeklyReport(eu().companyId),
+  }),
+  acao({
+    nome: "perguntar_assistente",
+    descricao:
+      "Faz uma pergunta ao assistente financeiro do WhatsApp (Claude com acesso aos dados) e devolve a resposta em texto. Custa uma chamada de IA.",
+    schema: z.object({ pergunta: z.string().min(2).max(4000) }),
+    escrita: false,
+    executar: ({ pergunta }) => {
+      const id = eu();
+      return processFinancialMessage(pergunta, id.companyId, id.nome);
+    },
+  }),
+  acao({
+    nome: "ver_auditoria_mcp",
+    descricao: "Só ADMIN. Histórico do que foi feito via MCP/API nesta empresa: quem (token), ação, argumentos, ok/erro e quando.",
+    schema: z.object({
+      limite: z.number().int().min(1).max(500).optional().describe("Padrão 50"),
+      acao: z.string().optional().describe("Filtra por nome da ação"),
+      soErros: z.boolean().optional(),
+    }),
+    escrita: false,
+    soAdmin: true,
+    executar: async ({ limite, acao: nomeAcao, soErros }) => {
+      const linhas = await prisma.$queryRaw<unknown[]>`
+        SELECT c.id::text AS id, t.name AS token, cu.name AS pessoa, c.tool AS acao, c.canal, c.ok, c.error AS erro,
+               c.ms, c.args, c.created_at AS quando
+          FROM mcp_calls c
+          JOIN mcp_tokens t ON t.id = c.token_id
+          JOIN company_users cu ON cu.id = t.acting_user_id
+         WHERE cu."companyId" = ${eu().companyId}
+           AND (${nomeAcao ?? null}::text IS NULL OR c.tool = ${nomeAcao ?? null})
+           AND (${soErros === true} = false OR c.ok = false)
+         ORDER BY c.id DESC
+         LIMIT ${limite ?? 50}`;
+      return linhas;
+    },
+  }),
+
+  // ── Acesso genérico ao banco (recortado pela empresa) ──
+  acao({
+    nome: "banco_modelos",
+    descricao:
+      "Mapa do banco para as ferramentas banco_*: modelos, campos (tipo, obrigatório, relações) e enums. Leia antes de usar banco_consultar/criar/atualizar/apagar.",
+    schema: z.object({}),
+    escrita: false,
+    soAdmin: true,
+    executar: async () => banco.modelos(),
+  }),
+  acao({
+    nome: "banco_consultar",
+    descricao:
+      "Consulta livre (Prisma findMany) em qualquer modelo, sempre só da empresa do token. where/select/include/orderBy no formato do Prisma; datas AAAA-MM-DD funcionam em filtros. Ex.: { modelo: 'Transaction', where: { status: 'OVERDUE', amount: { gt: 1000 } }, include: { category: true }, orderBy: { dueDate: 'asc' } }.",
+    schema: z.object({
+      modelo: z.enum(banco.MODELOS),
+      where: z.record(z.string(), z.unknown()).optional(),
+      select: z.record(z.string(), z.unknown()).optional(),
+      include: z.record(z.string(), z.unknown()).optional(),
+      orderBy: z.unknown().optional(),
+      take: z.number().int().min(1).max(banco.LIMITE_LINHAS).optional().describe("Padrão 50"),
+      skip: z.number().int().min(0).optional(),
+    }),
+    escrita: false,
+    soAdmin: true,
+    executar: (a) => banco.consultar(eu().companyId, a),
+  }),
+  acao({
+    nome: "banco_contar",
+    descricao: "Conta registros de um modelo com filtro (Prisma where), só da empresa do token.",
+    schema: z.object({ modelo: z.enum(banco.MODELOS), where: z.record(z.string(), z.unknown()).optional() }),
+    escrita: false,
+    soAdmin: true,
+    executar: (a) => banco.contar(eu().companyId, a),
+  }),
+  acao({
+    nome: "banco_agregar",
+    descricao:
+      "Somas/médias/mín/máx com ou sem agrupamento (Prisma aggregate/groupBy), só da empresa do token. Ex.: { modelo: 'Transaction', where: { type: 'EXPENSE', status: 'PAID' }, by: ['categoryId'], sum: ['amount'] }.",
+    schema: z.object({
+      modelo: z.enum(banco.MODELOS),
+      where: z.record(z.string(), z.unknown()).optional(),
+      by: z.array(z.string()).optional().describe("Campos de agrupamento"),
+      sum: z.array(z.string()).optional(),
+      avg: z.array(z.string()).optional(),
+      min: z.array(z.string()).optional(),
+      max: z.array(z.string()).optional(),
+      orderBy: z.unknown().optional(),
+      take: z.number().int().min(1).max(banco.LIMITE_LINHAS).optional(),
+    }),
+    escrita: false,
+    soAdmin: true,
+    executar: (a) => banco.agregar(eu().companyId, a),
+  }),
+  acao({
+    nome: "banco_criar",
+    descricao:
+      "Cria 1 ou até 500 registros direto no banco (sem as regras da tela: não gera recorrência/folha). companyId é posto sozinho; ids de relação são conferidos. Use para importações e correções em massa.",
+    schema: z.object({
+      modelo: z.enum(banco.MODELOS_ESCRITA),
+      dados: z.union([z.record(z.string(), z.unknown()), z.array(z.record(z.string(), z.unknown())).max(banco.LIMITE_LINHAS)]),
+    }),
+    escrita: true,
+    soAdmin: true,
+    executar: (a) => banco.criar(eu().companyId, a),
+  }),
+  acao({
+    nome: "banco_atualizar",
+    descricao:
+      "Atualiza em massa (Prisma updateMany) o que bater no filtro, só da empresa do token. Sem confirmar=true só mostra a PRÉVIA (quantos e amostra). Sem regras da tela.",
+    schema: z.object({
+      modelo: z.enum(banco.MODELOS_ESCRITA),
+      where: z.record(z.string(), z.unknown()),
+      dados: z.record(z.string(), z.unknown()),
+      confirmar: z.boolean().optional().describe("true executa; ausente = prévia"),
+    }),
+    escrita: true,
+    soAdmin: true,
+    executar: (a) => banco.atualizar(eu().companyId, a),
+  }),
+  acao({
+    nome: "banco_apagar",
+    descricao:
+      "Apaga em massa (Prisma deleteMany) o que bater no filtro, só da empresa do token. Sem confirmar=true só mostra a PRÉVIA. Irreversível.",
+    schema: z.object({
+      modelo: z.enum(banco.MODELOS_ESCRITA),
+      where: z.record(z.string(), z.unknown()),
+      confirmar: z.boolean().optional().describe("true executa; ausente = prévia"),
+    }),
+    escrita: true,
+    apaga: true,
+    soAdmin: true,
+    executar: (a) => banco.apagar(eu().companyId, a),
+  }),
+  acao({
+    nome: "sql_leitura",
+    descricao:
+      "SQL cru somente leitura (SELECT/WITH/EXPLAIN) no Postgres, em transação READ ONLY com timeout de 20s. ATENÇÃO: não recorta por empresa (filtre por \"companyId\"). Tabelas: transactions, accounts, categories, departments, contacts, employees, credit_cards, credit_card_invoices, invoice_items, events, event_items, variable_compensations, company_users, companies. Colunas em camelCase entre aspas (ex.: \"companyId\", \"dueDate\").",
+    schema: z.object({
+      sql: z.string().min(1).max(20_000),
+      maxLinhas: z.number().int().min(1).max(5000).optional().describe("Padrão 1000"),
+    }),
+    escrita: false,
+    soAdmin: true,
+    sql: true,
+    executar: ({ sql, maxLinhas }) => banco.sqlLeitura(sql, maxLinhas),
+  }),
 ];
 
 export function instrucoesPara(nome: string): string {
@@ -902,6 +1449,8 @@ export function instrucoesPara(nome: string): string {
     "departamentos, contatos, colaboradores e folha, eventos, relatórios e painel. " +
     `Você age como ${nome}: mesma empresa, mesmo papel e mesmas regras da tela. ` +
     "Valores em reais (amount sempre positivo; type INCOME/EXPENSE diz o sentido). Datas AAAA-MM-DD, meses AAAA-MM. " +
-    "Comece por quem_sou_eu; ids vêm das listagens (listar_categorias, listar_contas…). Nada aqui apaga dados."
+    "Comece por quem_sou_eu; ids vêm das listagens (listar_categorias, listar_contas…). " +
+    "Ações que apagam pedem confirmar=true: confirme com a pessoa antes. banco_atualizar/banco_apagar mostram uma prévia sem confirmar=true. " +
+    "Prefira as ferramentas da tela (aplicam as regras do app); banco_* e sql_leitura são acesso direto, sem regra de negócio."
   );
 }
